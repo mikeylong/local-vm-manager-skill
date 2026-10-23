@@ -1,0 +1,18 @@
+[project]
+name = "local-vm-manager"
+version = "0.1.0"
+description = "Owned, disposable Linux browser VMs with durable evidence and crash cleanup"
+requires-python = ">=3.12"
+dependencies = ["mcp==2.3.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["lvm*"]
+
+[dependency-groups]
+dev = [
+    "pyyaml>=6.0.3",
+]

@@ -3,9 +3,9 @@ name: local-vm-manager
 description: Run isolated Linux browser captures, selected Playwright web tests, or existing Surfaces and JudgmentKit browser suites through the local VM manager, with bounded storage, renewable leases, preserved evidence, and verified guest deletion. Use by default for general web testing and browser verification. Reserve Safari for checks with a concrete Safari-specific or native Apple acceptance requirement.
 ---
 
-Use the manager at `/Users/mike/Codex/local-vm-manager`. It supports Linux browser captures, selected npm Playwright specs, and the existing Node browser suites in Surfaces and JudgmentKit. Native macOS/iOS tests and general shell RPC are not implemented.
+Use the manager from this repository checkout. Resolve the installed skill symlink to `<manager-root>/skills/local-vm-manager/SKILL.md`; `<manager-root>` is the checkout containing `bin/lvm`, `lvm/`, and `settings.example.json`. The MCP configuration also records that root as its `cwd`. Use the actual resolved checkout path for all commands below. It supports Linux browser captures, selected npm Playwright specs, and the existing Node browser suites in Surfaces and JudgmentKit. Native macOS/iOS tests and general shell RPC are not implemented.
 
-General web testing and browser verification are VM-first. An authorized request for web testing is sufficient to use the manager; Mike does not need to name a VM, Playwright, the manager, or this skill. Run routine layout, responsive behavior, theme, DOM, screenshot, interaction, and download checks through the supported Linux workflows. Linux VM work does not depend on host Safari MCP availability.
+General web testing and browser verification are VM-first. An authorized request for web testing is sufficient to use the manager; the user does not need to name a VM, Playwright, the manager, or this skill. Run routine layout, responsive behavior, theme, DOM, screenshot, interaction, and download checks through the supported Linux workflows. Linux VM work does not depend on host Safari MCP availability.
 
 Reserve Safari MCP for a concrete Safari-specific or native Apple acceptance requirement, and name that requirement before using it. An older project preference for host Safari does not make a general web check Safari-specific. Preserve required engines, frozen assessments, and native workflows. If the manager does not support the requested workload, report the blocker rather than switching to host Safari, another host browser, or an ad hoc VM.
 
@@ -17,18 +17,19 @@ Reserve Safari MCP for a concrete Safari-specific or native Apple acceptance req
 
 The supervisor handles owner-process death and expired leases. A launchd sweeper recovers interrupted supervisors. Do not rely on an agent's final instruction or `finally` block as the cleanup mechanism.
 
-If MCP tools are unavailable in the current chat, the CLI is immediately usable:
+Prerequisites are an Apple Silicon Mac, Python 3.12+, and the completed bootstrap and registration steps in the repository README. If MCP tools are unavailable in the current chat after installation, use the CLI. Set `LVM_ROOT` to the actual checkout path discovered above:
 
 ```sh
-/Users/mike/Codex/local-vm-manager/bin/lvm run --url pilot --label browser-pilot
+LVM_ROOT="/absolute/path/to/local-vm-manager-skill"
+"$LVM_ROOT/bin/lvm" run --url pilot --label browser-pilot
 ```
 
-The CLI owns its lease until completion and waits for deletion. Use `bin/lvm status JOB_ID` to inspect a receipt. Do not substitute direct Lima/Tart commands or launch a host browser. When macOS/iOS/Safari is required, report that this manager's native profile is not implemented and follow the project's separately authorized native workflow.
+The CLI owns its lease until completion and waits for deletion. Use `"$LVM_ROOT/bin/lvm" status JOB_ID` to inspect a receipt. Do not substitute direct Lima/Tart commands or launch a host browser. When macOS/iOS/Safari is required, report that this manager's native profile is not implemented and follow the project's separately authorized native workflow.
 
 For an authorized run of a supported Playwright web suite, call `vm_run_playwright` with a canonical `source_dir`, explicit `tests/browser/*.spec.ts` paths, `expected_tests`, and a label. It returns while provisioning; renew every 30 seconds and poll until terminal. Do not call capture while this workload runs. The CLI manages renewals automatically:
 
 ```sh
-/Users/mike/Codex/local-vm-manager/bin/lvm playwright \
+"$LVM_ROOT/bin/lvm" playwright \
   --source /absolute/local/web/repo \
   --test tests/browser/example.spec.ts \
   --expected-tests 1 --label web-regression
@@ -41,10 +42,10 @@ Success additionally requires `test_result.passed`, the exact expected test coun
 For Surfaces and JudgmentKit's existing Node browser suites, use `vm_run_browser_suites(source_dir, profile, tests?, label)` or the CLI:
 
 ```sh
-/Users/mike/Codex/local-vm-manager/bin/lvm browser-suites \
-  --source /Users/mike/SurfacesPlatformV2 --profile surfaces
-/Users/mike/Codex/local-vm-manager/bin/lvm browser-suites \
-  --source /Users/mike/JudgmentKit2 --profile judgmentkit
+"$LVM_ROOT/bin/lvm" browser-suites \
+  --source /absolute/path/to/surfaces --profile surfaces
+"$LVM_ROOT/bin/lvm" browser-suites \
+  --source /absolute/path/to/judgmentkit --profile judgmentkit
 ```
 
 Omitting `--test` runs the profile's maintained set. Use repeated `--test` for an explicit subset of the allowlisted entrypoints listed in `lvm/suites.py`. The Surfaces set includes its seven npm browser commands plus the documented retained-session and guidance browser checks. JudgmentKit includes its six browser test files. Other historical QA scripts are not implicitly selected. Arbitrary commands and native tests are rejected.
