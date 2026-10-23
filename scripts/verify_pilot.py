@@ -3,7 +3,7 @@ import hashlib,json,os,pathlib,signal,subprocess,sys,time
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parent.parent))
 from lvm.manager import Manager,identity
 ROOT=pathlib.Path(__file__).resolve().parent.parent
-m=Manager().init();out=ROOT/'verification';out.mkdir(exist_ok=True)
+m=Manager().init();out=ROOT/'verification'/('lifecycle-'+str(time.time_ns()));out.mkdir(parents=True)
 def verify(job):
     x=m.status(job)
     assert x['state']=='complete',x
@@ -24,13 +24,13 @@ def verify(job):
 if sys.argv[1]=='normal':
     report=verify(sys.argv[2]);(out/'normal-run.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report));sys.exit()
 assert sys.argv[1]=='crash'
-before={p.stem for p in m.jobs.glob('*.json')}
+before={p.stem for p in m.jobs.glob('*.json')};label='mcp-agent-crash-'+str(time.time_ns())
 with (out/'crash-agent.jsonl').open('w') as stdout,(out/'crash-agent-stderr.log').open('w') as stderr:
-    agent=subprocess.Popen([sys.executable,str(ROOT/'scripts/mcp_pilot_agent.py')],cwd=ROOT,stdout=stdout,stderr=stderr,start_new_session=True)
+    agent=subprocess.Popen([sys.executable,str(ROOT/'scripts/mcp_pilot_agent.py'),label],cwd=ROOT,stdout=stdout,stderr=stderr,start_new_session=True)
     end=time.monotonic()+900;job=None;last=None;killed=False
     try:
         while time.monotonic()<end:
-            new={p.stem for p in m.jobs.glob('*.json')}-before
+            new={p.stem for p in m.jobs.glob('*.json') if p.stem not in before and m.status(p.stem).get('label')==label}
             if new:
                 assert len(new)==1;job=next(iter(new));x=m.status(job)
                 if x['state']!=last:print(json.dumps({'job_id':job,'state':x['state']}),flush=True);last=x['state']

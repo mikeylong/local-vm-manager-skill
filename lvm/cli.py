@@ -19,6 +19,7 @@ def main():
     a=sub.add_parser('run');a.add_argument('--url',default='pilot');a.add_argument('--label',default='browser-pilot');a.add_argument('--hold-after-capture',action='store_true')
     a=sub.add_parser('playwright');a.add_argument('--source',required=True);a.add_argument('--test',action='append',required=True);a.add_argument('--expected-tests',type=int,required=True);a.add_argument('--label',default='playwright')
     a=sub.add_parser('browser-suites');a.add_argument('--source',required=True);a.add_argument('--profile',required=True,choices=['surfaces','judgmentkit']);a.add_argument('--test',action='append');a.add_argument('--label',default='browser-suites')
+    a=sub.add_parser('surfaces-connected-observer');a.add_argument('--label',default='surfaces-connected-observer')
     a=sub.add_parser('start');a.add_argument('--label',default='browser');a.add_argument('--owner-pid',type=int);a.add_argument('--lease-seconds',type=int,default=120)
     for name in ('status','finish','supervise'):
         a=sub.add_parser(name);a.add_argument('job_id')
@@ -27,6 +28,12 @@ def main():
     sub.add_parser('inventory');sub.add_parser('sweep')
     args=p.parse_args();m=Manager().init()
     try:
+        if args.command=='surfaces-connected-observer':
+            from . import surfaces_connected
+            x=surfaces_connected.start(m,args.label,os.getpid());job=x['job_id'];emit({'job_id':job,'state':x['state']})
+            try:x=wait(m,job,lambda s:s['state'] in TERMINAL,seconds=max(60,int(x['hard_deadline']-time.time())+120))
+            finally:m.finish(job)
+            emit(x);return 0 if x['state']=='complete' and x.get('test_result',{}).get('passed') else 1
         if args.command=='browser-suites':
             from . import suites
             x=suites.start(m,args.source,args.profile,args.test,args.label);job=x['job_id'];emit({'job_id':job,'state':x['state']})

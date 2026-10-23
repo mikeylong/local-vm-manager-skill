@@ -1,5 +1,5 @@
 """Real MCP client used as the killable agent in integration verification."""
-import asyncio,json,pathlib
+import asyncio,json,pathlib,sys
 from mcp import ClientSession,StdioServerParameters
 from mcp.client.stdio import stdio_client
 ROOT=pathlib.Path(__file__).resolve().parent.parent
@@ -11,7 +11,7 @@ async def main():
                 result=await s.call_tool(name,args)
                 if result.is_error:raise RuntimeError(str(result.content))
                 return result.structured_content or json.loads(result.content[0].text)
-            x=await call('vm_start',{'label':'mcp-agent-crash-pilot','lease_seconds':120})
+            x=await call('vm_start',{'label':sys.argv[1] if len(sys.argv)>1 else 'mcp-agent-crash-pilot','lease_seconds':120})
             job=x['job_id'];print(json.dumps({'event':'started','job_id':job}),flush=True)
             while True:
                 await call('vm_renew',{'job_id':job})

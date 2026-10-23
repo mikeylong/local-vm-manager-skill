@@ -26,7 +26,7 @@ The repository is private, so Git access requires authorization to `mikeylong/lo
 
 The installer registers the skill at `${CODEX_HOME:-$HOME/.codex}/skills/local-vm-manager`, adds the `local-vm-manager` MCP entry, and loads a user LaunchAgent that sweeps every 30 seconds and at login. Its service name is derived from the checkout path. All conflicts are checked before registration: an existing skill, MCP entry, or launch-agent file pointing elsewhere is preserved and reported. An identical installation can be repeated safely. `--codex-home` selects another Codex profile; `--launch-agent-dir` selects another plist directory. `--no-load` writes registrations without loading the recovery service and is intended for setup testing, not unattended browser jobs.
 
-Restart or reload your Codex MCP connection after installation, then read the installed skill. CLI commands are available immediately. Run VM CLI invocations outside the macOS shell sandbox with approval for that invocation. Keep the checkout at its installed path; reinstall deliberately before relocating it. This publication does not replace any existing installation on the author's Mac.
+Restart or reload your Codex MCP connection after installation, then read the installed skill. CLI commands are available immediately. Run VM CLI invocations outside the macOS shell sandbox with approval for that invocation. Keep the checkout at its installed path; reinstall deliberately before relocating it. The repository is the canonical source for manager code and the skill. Local runtime state and task bindings are configuration, never a second source tree to edit.
 
 ## First browser check
 
@@ -64,9 +64,36 @@ bin/lvm browser-suites --source /absolute/path/to/surfaces --profile surfaces
 bin/lvm browser-suites --source /absolute/path/to/judgmentkit --profile judgmentkit
 ```
 
-Repeated `--test` options select a subset of the allowlisted entrypoints in [lvm/suites.py](lvm/suites.py); omitting them runs the full maintained set. These profiles require the corresponding project and its fixtures/lockfile. The profile names do not install those applications. Custom connected-observer adapters under separate development are outside this baseline.
+Repeated `--test` options select a subset of the allowlisted entrypoints in [lvm/suites.py](lvm/suites.py); omitting them runs the full maintained set. These profiles require the corresponding project and its fixtures/lockfile. The profile names do not install those applications. The fixed Surfaces connected-observer adapter is also included; see the local binding section below.
 
 Surfaces uses its locked Playwright Chromium. JudgmentKit uses the existing configured-Chrome option with Debian ARM64 Chromium, whose observed version is recorded separately. Required engines and frozen acceptance requirements remain binding. Linux results do not establish Safari or native Apple behavior.
+
+## Canonical source and an existing installation
+
+Keep code changes in this repository and the installed skill linked to `skills/local-vm-manager`. An ignored `installation.json` can select an existing data root. The controller keeps its owner UUID, receipts, settings, tools, cache, and evidence there; it reads guest helpers and starts supervisors from the canonical checkout. `bin/lvm inventory` reports both paths. Do not move an ownership record or historical evidence to make an installation match a new checkout.
+
+An explicit migration from the original layout is supported:
+
+```sh
+.venv/bin/python scripts/install.py --migrate-from /absolute/path/to/legacy-manager --dry-run
+.venv/bin/python scripts/install.py --migrate-from /absolute/path/to/legacy-manager
+```
+
+The installer requires no active job, cleanup blocker, or remaining runtime. It holds the admission lock during registration, accepts only the exact supplied legacy CLI/MCP/skill paths, preserves unrelated Codex settings, saves registration backups under ignored `verification/`, and loads the new recovery service before retiring the recognized legacy service. Foreign registrations are rejected. Historical source remains as a backup; legacy CLI launchers and Python imports delegate to this checkout. `--wait-idle SECONDS` can hold admission while an existing job finishes naturally, without stopping its VM. Existing MCP processes need a connection reload or app restart; a changed config file does not replace code already in memory.
+
+## Local Surfaces connected-observer binding
+
+[lvm/surfaces_connected.py](lvm/surfaces_connected.py) preserves the adapter for the two reviewed technical fixtures, `npm-vite-dist` and `npm-vite-nested-output`:
+
+```sh
+bin/lvm surfaces-connected-observer --label surfaces-connected-observer
+```
+
+The matching MCP tool is `vm_run_surfaces_connected_observer(label)`. Neither interface accepts arbitrary commands, source directories, fixtures, budgets, or runtime names. A fresh installation leaves this profile disabled. It requires a separately reviewed `adapters/surfaces-connected.json` in the data root, containing schema version 1, the exact task/project/state/script/Node/tsx paths, fixed launch/expectation/Node sizes and SHA-256 pins, and the tsx tree digest. The current Mac's binding is retained locally and excluded from Git; installing on another Mac does not copy its task data or authorization.
+
+Dispatch verifies the reviewed independent expectation, source pins, fresh owned state, and deadlines. The workload also seals the adapter configuration and canonical manager source hashes. Changed or expired bindings block dispatch. This migration does not renew a binding, fix the observer preparation blocker, or rerun those fixtures. A future authorized fixture run needs its own current reviewed binding.
+
+This specialized profile reserves two 20 GiB fixture backings plus the host floor, separately from the ordinary browser profile's 20 GiB storage reservation. Task evidence is capped at 64 MiB, with a 2 MiB manager allowance; the bound task maintains its nonrefunded evidence accounting. Evidence manifests and identity/open-handle checks gate deletion of only the fresh marked runtime. Results are technical fixture evidence and do not establish product, native, Safari, or deployment acceptance.
 
 ## MCP workflow
 
@@ -84,7 +111,7 @@ The controller deletes only its own marked runtime namespace after identity and 
 
 ## Disk limits and Git hygiene
 
-Defaults are 2 CPUs, 2 GiB RAM, a 12 GiB virtual guest disk, one active job, a 20 GiB allocated-storage budget for this checkout, a 10 GiB host free-space floor, and a 250 MiB evidence allowance per job. Admission reserves the guest disk and runtime checks monitor usage. These are monitored limits, not a filesystem hard quota. APFS shared extents can be counted more than once, so allocation is not exclusive reclaimable space.
+Defaults are 2 CPUs, 2 GiB RAM, a 12 GiB virtual guest disk, one active job, a 20 GiB allocated-storage budget for the selected ordinary browser data root, a 10 GiB host free-space floor, and a 250 MiB evidence allowance per job. Admission reserves the guest disk and runtime checks monitor usage. These are monitored limits, not a filesystem hard quota. APFS shared extents can be counted more than once, so allocation is not exclusive reclaimable space.
 
 Evidence accumulates and counts toward the budget. New runs are refused when space cannot be reserved; old evidence is never automatically pruned. One reusable Debian base and downloaded dependencies remain cached between runs. Guest runtime disks are deleted after evidence verification.
 
@@ -119,4 +146,6 @@ Each check retains local evidence and verifies guest/runtime deletion. Runtime v
 
 ## Current validation
 
-The portable checkout passed 40 unit tests, a real stdio MCP check, and three Linux capture pilots: normal completion, agent-client SIGKILL, and supervisor SIGKILL recovered by its separate launch service. All three preserved verified evidence and deleted their guests and runtime directories. These checks ran on an Apple Silicon development Mac with a fresh Python environment and downloaded dependencies; a second physical Mac has not been tested. Raw receipts, evidence, and verification reports remain local and excluded from Git.
+The portable baseline passed 40 unit tests, a real stdio MCP check, and three Linux capture pilots: normal completion, agent-client SIGKILL, and supervisor SIGKILL recovered by its separate launch service. All three preserved verified evidence and deleted their guests and runtime directories. These checks ran on an Apple Silicon development Mac with a fresh Python environment and downloaded dependencies; a second physical Mac has not been tested. Raw receipts, evidence, and verification reports remain local and excluded from Git.
+
+The canonical-source migration passes 54 browser-free unit tests, including isolated source/storage, legacy-registration, and fixed-adapter contract checks. The migrated installation also passed new normal, agent-client SIGKILL, and supervisor SIGKILL capture pilots. Each retained verified evidence and deleted its guest/runtime. Preservation checks found all 3,407 historical evidence files, 44 historical receipts, and 97 external VM disk identities/configurations unchanged. Migration verification retains its own new reports without overwriting earlier receipts or evidence.

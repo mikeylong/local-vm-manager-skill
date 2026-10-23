@@ -2,15 +2,15 @@
 import json,os,pathlib,signal,subprocess,sys,time
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parent.parent))
 from lvm.manager import Manager,identity,sha
-root=pathlib.Path(__file__).resolve().parent.parent;m=Manager().init();out=root/'verification';out.mkdir(exist_ok=True)
-before={p.stem for p in m.jobs.glob('*.json')}
+root=pathlib.Path(__file__).resolve().parent.parent;m=Manager().init();out=root/'verification'/('lifecycle-'+str(time.time_ns()));out.mkdir(parents=True)
+before={p.stem for p in m.jobs.glob('*.json')};label='launchd-recovery-'+str(time.time_ns())
 with (out/'reaper-agent.jsonl').open('w') as f:
-    agent=subprocess.Popen([str(root/'bin/lvm'),'run','--label','launchd-recovery-pilot','--hold-after-capture'],cwd=root,stdout=f,stderr=subprocess.STDOUT,start_new_session=True)
+    agent=subprocess.Popen([str(root/'bin/lvm'),'run','--label',label,'--hold-after-capture'],cwd=root,stdout=f,stderr=subprocess.STDOUT,start_new_session=True)
     job=None;injected=False
     try:
         end=time.monotonic()+900
         while time.monotonic()<end:
-            new={p.stem for p in m.jobs.glob('*.json')}-before
+            new={p.stem for p in m.jobs.glob('*.json') if p.stem not in before and m.status(p.stem).get('label')==label}
             if new:
                 assert len(new)==1;job=next(iter(new));x=m.status(job)
                 if x['state']=='ready' and len(x['exports'])==4:break

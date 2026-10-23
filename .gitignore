@@ -30,3 +30,7 @@ id_ed25519*
 *.tar.gz
 *.tar.xz
 *.zip
+
+# Local installation and reviewed task bindings
+/installation.json
+/adapters/

@@ -3,7 +3,7 @@ from mcp.server import MCPServer
 from .manager import Manager,ManagerError
 from mcp.server.mcpserver.exceptions import ToolError,ResourceError
 from functools import wraps
-mcp=MCPServer('local-vm-manager',version='0.1.0',instructions='Owns only its isolated Linux browser guests. Capture pages or run selected web Playwright specs, poll status, renew leases, finish. Evidence paths and SHA-256 survive guest deletion. No native/macOS support in this pilot.')
+mcp=MCPServer('local-vm-manager',version='0.1.0',instructions='Owns its isolated Linux browser guests and one fixed reviewed Surfaces connected-observer workload. Capture pages, run selected web Playwright specs, or start that exact fixed workload; poll status, renew leases, finish. Evidence paths and SHA-256 survive owned runtime deletion. General native/macOS execution is unsupported.')
 
 def manager():return Manager().init()
 def expected_errors(fn):
@@ -29,6 +29,12 @@ def vm_run_browser_suites(source_dir:str,profile:str,tests:list[str]|None=None,l
     """Run existing allowlisted Surfaces or JudgmentKit Node browser entrypoints in Linux. Omit tests for the profile's complete maintained set. Poll and renew every 30 seconds. Missing prerequisites and test failures retain evidence and delete the owned guest; no native tests."""
     from . import suites
     return suites.start(manager(),source_dir,profile,tests,label)
+@mcp.tool()
+@expected_errors
+def vm_run_surfaces_connected_observer(label:str='surfaces-connected-observer')->dict:
+    """Run only the reviewed Surfaces connected-observer two-fixture workload. It exposes no source path or command arguments. Poll and renew every 30 seconds; success requires authenticated fixture evidence and verified deletion of the newly created Surfaces runtime."""
+    from . import surfaces_connected
+    return surfaces_connected.start(manager(),label)
 @mcp.tool()
 @expected_errors
 def vm_renew(job_id:str,lease_seconds:int=120)->dict:

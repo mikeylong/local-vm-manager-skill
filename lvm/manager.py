@@ -51,9 +51,24 @@ def lock(path, blocking=True):
         try:yield
         finally:fcntl.flock(f,fcntl.LOCK_UN)
 
+def data_root(code_root=ROOT):
+    """Select local storage without moving its ownership record or evidence."""
+    code_root=pathlib.Path(code_root)
+    config=code_root/'installation.json'
+    if config.is_symlink():raise ManagerError('Refusing symlinked installation configuration')
+    value=os.environ.get('LVM_DATA_ROOT')
+    if value is None and config.exists():
+        selected=read(config)
+        if selected.get('schema_version')!=1:raise ManagerError('Unsupported installation configuration')
+        value=selected['data_root']
+    chosen=pathlib.Path(value) if value is not None else code_root
+    if not chosen.is_absolute():raise ManagerError('Data root must be absolute')
+    return chosen
+
 class Manager:
-    def __init__(self,root=ROOT):
-        self.root=pathlib.Path(root).absolute()
+    def __init__(self,root=None):
+        self.code_root=ROOT
+        self.root=pathlib.Path(root if root is not None else data_root()).absolute()
         if self.root.is_symlink() or self.root.resolve()!=self.root:raise ManagerError('Project root must be canonical, without symlinks')
         if '/Documents/' in str(self.root) or '/Desktop/' in str(self.root) or 'Mobile Documents' in str(self.root):
             raise ManagerError('Runtime and evidence must live outside iCloud locations')
@@ -86,6 +101,7 @@ class Manager:
         return x
     def inventory(self):
         return {'scope':'only this manager; external VM stores are never queried',
+                'code_root':str(self.code_root),'data_root':str(self.root),
                 'allocated_bytes':allocated(self.root), 'settings':self.settings(),
                 'jobs':[self.status(p.stem) for p in sorted(self.jobs.glob('*.json'))]}
     def start(self,label='browser',lease_seconds=120,owner_pid=None,workload=None):
@@ -93,27 +109,35 @@ class Manager:
         if not isinstance(lease_seconds,int) or not 30<=lease_seconds<=3600:raise ManagerError('Lease must be 30–3600 seconds')
         with lock(self.state/'admission.lock'):
             s=self.settings()
+            special=bool(workload and workload[1].get('runner')=='surfaces-connected-observer')
             active=[p for p in self.jobs.glob('*.json') if read(p)['state'] not in ('complete','failed')]
             if active:raise ManagerError('An active or cleanup-blocked job already exists')
-            if allocated(self.root)+s['disk_gib']*GIB>s['storage_budget_gib']*GIB:raise ManagerError('Global storage reservation would exceed budget')
-            if shutil.disk_usage(self.root).free < (s['disk_gib']+s['free_floor_gib'])*GIB:raise ManagerError('Host free-space floor would be breached')
-            if not self.lima.is_file() or not (self.root/'cache/debian.raw').is_file():raise ManagerError('Run scripts/bootstrap.py first')
-            if sha(self.lima)!=s['limactl_sha256'] or sha(self.root/'cache/debian.raw')!=s['image_sha256']:raise ManagerError('Pinned runtime dependency changed')
+            # The fixed Surfaces workload may retain one 20 GiB clean base and
+            # one 20 GiB execution disk at the same time.  Reserve both before
+            # creating any manager-owned state.
+            reserve_gib=40 if special else s['disk_gib']
+            if not special and allocated(self.root)+reserve_gib*GIB>s['storage_budget_gib']*GIB:raise ManagerError('Global storage reservation would exceed budget')
+            if shutil.disk_usage(self.root).free < (reserve_gib+s['free_floor_gib'])*GIB:raise ManagerError('Host free-space floor would be breached')
+            if not special:
+                if not self.lima.is_file() or not (self.root/'cache/debian.raw').is_file():raise ManagerError('Run scripts/bootstrap.py first')
+                if sha(self.lima)!=s['limactl_sha256'] or sha(self.root/'cache/debian.raw')!=s['image_sha256']:raise ManagerError('Pinned runtime dependency changed')
+            owner_pid=owner_pid or os.getpid();start=identity(owner_pid)
+            if not start:raise ManagerError('Owner process is not alive')
+            hard_deadline=workload[1]['absolute_deadline'] if special else time.time()+3600
+            if hard_deadline<=time.time()+60 or hard_deadline>time.time()+21600:raise ManagerError('Invalid workload hard deadline')
             job=uuid.uuid4().hex[:8]; d=self.runtime/job;d.mkdir()
             home=d/'l';home.mkdir()
             e=self.evidence/job;e.mkdir()
-            owner_pid=owner_pid or os.getpid();start=identity(owner_pid)
-            if not start:raise ManagerError('Owner process is not alive')
             mark={'manager_id':self.owner['manager_id'],'job_id':job,'device':home.stat().st_dev,'inode':home.stat().st_ino}
             atomic(d/'owner.json',mark)
-            x={**mark,'label':label,'profile':'linux-browser','created_at':time.time(),
-               'deadline':time.time()+lease_seconds,'hard_deadline':time.time()+3600,'owner_pid':owner_pid,'owner_start':start,
+            x={**mark,'label':label,'profile':'surfaces-connected-observer' if special else 'linux-browser','created_at':time.time(),
+               'deadline':min(time.time()+lease_seconds,hard_deadline),'hard_deadline':hard_deadline,'owner_pid':owner_pid,'owner_start':start,
                'state':'queued','captures':[],'exports':{},'peak_allocated_bytes':allocated(self.root),
                'runtime_path':str(d),'evidence_path':str(e),'schema_version':1}
             if workload:
                 payload,spec=workload
                 shutil.move(payload,d/'input.tar')
-                x.update(profile='linux-playwright',workload=spec,payload_sha256=sha(d/'input.tar'))
+                x.update(profile='surfaces-connected-observer' if special else 'linux-playwright',workload=spec,payload_sha256=sha(d/'input.tar'))
                 atomic(e/'source-manifest.json',spec)
                 x['exports']['source-manifest.json']={'bytes':(e/'source-manifest.json').stat().st_size,'sha256':sha(e/'source-manifest.json')}
             atomic(self.path(job),x)
@@ -122,7 +146,7 @@ class Manager:
     def spawn(self,job):
         log=(self.evidence/job/'supervisor.log').open('ab',buffering=0)
         try:
-            subprocess.Popen([sys.executable,'-m','lvm.cli','supervise',job],cwd=self.root,
+            subprocess.Popen([sys.executable,'-m','lvm.cli','supervise',job],cwd=self.code_root,env={**os.environ,'LVM_DATA_ROOT':str(self.root)},
                              stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,close_fds=True)
         finally:log.close()
     def capture(self,job,url='pilot'):
@@ -203,7 +227,7 @@ class Manager:
         if p.returncode and not allow_fail:raise ManagerError('Lima '+args[0]+' failed ('+str(p.returncode)+'); see lifecycle.log')
         return p.returncode
     def config(self,x):
-        script=base64.b64encode((self.root/'lvm/guest_capture.py').read_bytes()).decode()
+        script=base64.b64encode((self.code_root/'lvm/guest_capture.py').read_bytes()).decode()
         provision='''#!/bin/sh
 set -eu
 export DEBIAN_FRONTEND=noninteractive
@@ -215,12 +239,12 @@ chmod 755 /opt/lvm-capture.py
 '''.replace('SCRIPT',script)
         if x.get('workload'):
             provision=provision.replace('chromium fonts-liberation ca-certificates python3','fonts-liberation ca-certificates python3 xz-utils')
-            helper=base64.b64encode((self.root/'lvm/guest_playwright.py').read_bytes()).decode()
+            helper=base64.b64encode((self.code_root/'lvm/guest_playwright.py').read_bytes()).decode()
             provision += "printf '%s' "+helper+" | base64 -d > /opt/lvm-playwright.py\nchmod 755 /opt/lvm-playwright.py\n"
             if x['workload'].get('runner')=='node-suites':
                 packages='git chromium' if x['workload']['suite_profile']=='judgmentkit' else 'git'
                 provision += 'apt-get install -y --no-install-recommends '+packages+'\napt-get clean\n'
-                helper=base64.b64encode((self.root/'lvm/guest_suites.py').read_bytes()).decode()
+                helper=base64.b64encode((self.code_root/'lvm/guest_suites.py').read_bytes()).decode()
                 provision += "printf '%s' "+helper+" | base64 -d > /opt/lvm-suites.py\n"
         s=self.settings()
         return {'vmType':'vz','arch':'aarch64','plain':True,'cpus':2,'memory':s['memory_gib'].__str__()+'GiB',
@@ -320,9 +344,21 @@ chmod 755 /opt/lvm-capture.py
                     while identity(command['pid'])==command['start'] and time.monotonic()<until:time.sleep(.1)
                     if identity(command['pid'])==command['start']:os.killpg(command['pid'],signal.SIGKILL)
                 x.pop('active_command',None)
+                workload=x.get('active_workload')
+                if workload and workload.get('start') and identity(workload['pid'])==workload['start']:
+                    os.killpg(workload['pid'],signal.SIGTERM)
+                    until=time.monotonic()+8
+                    while identity(workload['pid'])==workload['start'] and time.monotonic()<until:time.sleep(.1)
+                    if identity(workload['pid'])==workload['start']:os.killpg(workload['pid'],signal.SIGKILL)
+                x.pop('active_workload',None)
                 raise Cancelled(reason)
             reason=self.abort_reason(x)
             if reason:raise Cancelled(reason)
+            if x.get('workload',{}).get('runner')=='surfaces-connected-observer':
+                from . import surfaces_connected
+                x['state']='testing';atomic(self.path(job),x)
+                surfaces_connected.run(self,x)
+                raise Cancelled('normal')
             x['state']='provisioning';atomic(self.path(job),x)
             config=self.home(x).parent/'guest.json';atomic(config,self.config(x))
             self.command(x,['start','--name=guest',str(config)],timeout=720)
@@ -359,15 +395,22 @@ chmod 755 /opt/lvm-capture.py
             if (self.runtime/job).exists():
                 for request in x['captures']:self.export(x,request)
                 if x.get('workload'):
-                    from . import playwright
-                    playwright.export(self,x)
+                    if x['workload'].get('runner')=='surfaces-connected-observer':
+                        from . import surfaces_connected
+                        surfaces_connected.export(self,x)
+                    else:
+                        from . import playwright
+                        playwright.export(self,x)
             x['evidence_complete']=all(request+'-'+name in x['exports'] for request in x['captures'] for name in EXPORTS)
             if x.get('workload'):
                 x['evidence_complete']=bool(x.get('test_result'))
             if not x['evidence_complete']:x['error']='Capture interrupted before all evidence was produced; available evidence retained'
             x['evidence_verified']=all((self.evidence/job/k).is_file() and sha(self.evidence/job/k)==v['sha256'] for k,v in x['exports'].items())
             if not x['evidence_verified']:raise ManagerError('Host evidence verification failed; refusing deletion')
-            self.cleanup(x)
+            if x.get('workload',{}).get('runner')=='surfaces-connected-observer':
+                from . import surfaces_connected
+                surfaces_connected.cleanup(self,x)
+            else:self.cleanup(x)
             x['state']='failed' if x.get('error') else 'complete'
         except BaseException as e:x['state']='cleanup_blocked';x['cleanup_error']=str(e)
         x['finished_at']=time.time();x['retained_evidence_bytes']=sum(v['bytes'] for v in x['exports'].values())

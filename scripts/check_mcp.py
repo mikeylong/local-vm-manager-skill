@@ -24,6 +24,11 @@ async def main():
             x['browser_suite_schema']=tool.input_schema
             bad=await s.call_tool('vm_run_browser_suites',{'source_dir':str(ROOT),'profile':'surfaces','tests':['ios/Native.test.ts']});assert bad.is_error
             x['native_node_suite_rejected']=True
+            assert 'vm_run_surfaces_connected_observer' in x['tool_names']
+            surfaces=next(t for t in t.tools if t.name=='vm_run_surfaces_connected_observer')
+            properties=surfaces.input_schema.get('properties',{})
+            assert set(properties)<= {'label'} and 'source_dir' not in properties and 'command' not in properties
+            x['surfaces_connected_observer_schema']=surfaces.input_schema
             assert 'vm_run_playwright' in x['tool_names']
             output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(x,indent=2)+'\n');print(json.dumps(x))
 parser=argparse.ArgumentParser();parser.add_argument('--output',type=pathlib.Path,default=ROOT/'verification/mcp-protocol-current.json');output=parser.parse_args().output

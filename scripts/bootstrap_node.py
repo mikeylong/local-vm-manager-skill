@@ -1,12 +1,14 @@
 """Fetch checksum-pinned Linux ARM64 Node for guest-only Playwright workloads."""
-import hashlib,json,pathlib,urllib.request
+import hashlib,json,pathlib,sys,urllib.request
 ROOT=pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0,str(ROOT))
+from lvm.manager import data_root
 VERSION='v22.16.0'
 NAME=f'node-{VERSION}-linux-arm64.tar.xz'
 SHA256='eab80cb88f8fda1e65f5e8d0420c9809bdb320b03fd34976ab7161b6e703b910'
 URL=f'https://nodejs.org/dist/{VERSION}/{NAME}'
 if __name__=='__main__':
-    cache=ROOT/'cache';cache.mkdir(exist_ok=True);target=cache/NAME
+    cache=data_root()/'cache';cache.mkdir(exist_ok=True);target=cache/NAME
     if not target.exists():
         part=target.with_suffix('.part')
         with urllib.request.urlopen(URL,timeout=120) as src,part.open('xb') as dst:

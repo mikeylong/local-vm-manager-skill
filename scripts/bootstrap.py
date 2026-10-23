@@ -12,7 +12,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from lvm.manager import Manager
+from lvm.manager import Manager, data_root
 
 
 def digest(path, algorithm='sha256'):
@@ -34,15 +34,16 @@ def download(url, destination, expected, algorithm='sha256'):
         temporary.unlink(missing_ok=True)
 
 
-def bootstrap(root=ROOT):
+def bootstrap(root=None):
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise RuntimeError('This release requires an Apple Silicon Mac (Darwin arm64).')
     if sys.version_info < (3, 12):
         raise RuntimeError('Python 3.12 or newer is required.')
-    root = Path(root)
+    code = Path(root) if root is not None else ROOT
+    root = Path(root) if root is not None else data_root()
     Manager(root)
     settings = root / 'settings.json'
-    defaults = json.loads((root / 'settings.example.json').read_text())
+    defaults = json.loads((code / 'settings.example.json').read_text())
     selected = json.loads(settings.read_text()) if settings.exists() else defaults
     for field in ('image_url', 'image_archive_sha512', 'image_sha256', 'lima_version', 'lima_archive_sha256', 'limactl_sha256'):
         if selected.get(field) != defaults[field]:

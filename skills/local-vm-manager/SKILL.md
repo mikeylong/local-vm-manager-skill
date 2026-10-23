@@ -1,6 +1,6 @@
 ---
 name: local-vm-manager
-description: Run isolated Linux browser captures, selected Playwright web tests, or existing Surfaces and JudgmentKit browser suites through the local VM manager, with bounded storage, renewable leases, preserved evidence, and verified guest deletion. Use by default for general web testing and browser verification. Reserve Safari for checks with a concrete Safari-specific or native Apple acceptance requirement.
+description: Run isolated Linux browser captures, selected Playwright web tests, existing Surfaces and JudgmentKit browser suites, or the fixed reviewed Surfaces connected-observer workload through the local VM manager, with bounded storage, renewable leases, preserved evidence, and verified guest deletion. Use by default for general web testing and browser verification. Reserve Safari for checks with a concrete Safari-specific or native Apple acceptance requirement.
 ---
 
 Use the manager from this repository checkout. Resolve the installed skill symlink to `<manager-root>/skills/local-vm-manager/SKILL.md`; `<manager-root>` is the checkout containing `bin/lvm`, `lvm/`, and `settings.example.json`. The MCP configuration also records that root as its `cwd`. Use the actual resolved checkout path for all commands below. It supports Linux browser captures, selected npm Playwright specs, and the existing Node browser suites in Surfaces and JudgmentKit. Native macOS/iOS tests and general shell RPC are not implemented.
@@ -12,7 +12,7 @@ Reserve Safari MCP for a concrete Safari-specific or native Apple acceptance req
 1. Check `vm_inventory` for an active job or cleanup blocker. The manager owns only VMs it creates in its private namespace. Never adopt, stop, prune, or delete an existing external VM.
 2. Call `vm_start` with a descriptive label. Poll `vm_status` until `ready`. Call `vm_renew` at least every 30 seconds while working or provisioning. The default lease is two minutes; the hard job deadline is one hour. A live MCP server does not establish that an agent is still working.
 3. Call `vm_capture` with an authorized HTTP(S) URL, or `pilot` for the deterministic browser fixture. This runs Chromium inside Linux, with no host mounts or host browser launch. Poll until the request's `result.json`, PNG, rendered HTML, and browser log appear in `exports`. Name the actual engine in the result. Linux Chromium/WebKit evidence cannot establish Safari or native Apple behavior.
-4. Call `vm_finish`, including after failed checks. Poll for a terminal receipt. Success requires `vm_deleted`, `runtime_deleted`, `evidence_verified`, and the expected capture files; inspect the result's `passed` value too. A `cleanup_blocked` status is unfinished work. Preserve the error and resolve the owned cleanup before requesting another VM.
+4. Call `vm_finish`, including after failed checks. Poll for a terminal receipt. Success requires `vm_deleted`, `runtime_deleted`, `evidence_complete`, `evidence_verified`, and the expected capture files; inspect the result's `passed` value too. A `cleanup_blocked` status is unfinished work. Preserve the error and resolve the owned cleanup before requesting another VM.
 5. Return the job ID, useful evidence paths, and deletion result. Keep screenshots, logs, and source changes on the host outside iCloud. Never export browser profiles, credentials, toolchains, caches, or whole guest disks as routine evidence. Evidence overflow is an explicit failure, not permission to discard required results.
 
 The supervisor handles owner-process death and expired leases. A launchd sweeper recovers interrupted supervisors. Do not rely on an agent's final instruction or `finally` block as the cleanup mechanism.
@@ -23,6 +23,8 @@ Prerequisites are an Apple Silicon Mac, Python 3.12+, and the completed bootstra
 LVM_ROOT="/absolute/path/to/local-vm-manager-skill"
 "$LVM_ROOT/bin/lvm" run --url pilot --label browser-pilot
 ```
+
+This repository is the canonical source for code and skill. `installation.json` may select an existing local data root; receipts and evidence stay there. Do not edit a historical installation copy.
 
 The CLI owns its lease until completion and waits for deletion. Use `"$LVM_ROOT/bin/lvm" status JOB_ID` to inspect a receipt. Do not substitute direct Lima/Tart commands or launch a host browser. When macOS/iOS/Safari is required, report that this manager's native profile is not implemented and follow the project's separately authorized native workflow.
 
@@ -53,3 +55,14 @@ Omitting `--test` runs the profile's maintained set. Use repeated `--test` for a
 These profiles freeze unchanged source and lockfiles, install dependencies inside Linux, and run each original entrypoint sequentially. Surfaces uses its locked Playwright Chromium with sandboxing and trace instrumentation. JudgmentKit uses its existing configured-Chrome environment option with Debian ARM64 Chromium; record this observed browser version separately from the locked `@sparticuz/chromium` package. No host dependency tree or browser is used.
 
 Inspect `playwright/suite-results.json` for every command's status, exit code, and source hash preservation, and `environment.json` for the engine. Logs, generated screenshots, component evidence, and available traces are exported under `suite-logs` and `suite-artifacts`. Surfaces retained-session checks receive only the exact historical Git objects needed by their existing lookup, with the original blob hash verified in Linux. Missing retained fixtures are `blocked`, never passing tests; preserve those diagnostics and do not fabricate data or weaken assertions. Overall success requires every selected suite to pass and the normal evidence/deletion receipt flags. A failed or blocked suite still cleans up its owned guest.
+
+For the one reviewed Surfaces connected-observer fixture pair, use the fixed CLI profile below, or `vm_run_surfaces_connected_observer` after reloading the MCP connection:
+
+```sh
+"$LVM_ROOT/bin/lvm" surfaces-connected-observer \
+  --label surfaces-connected-observer-v1
+```
+
+This profile accepts no source path, command, fixture, runtime, or budget override. It verifies the exact reviewed Surfaces launch and independent expectation, the pinned host Node/tsx loader, the fresh task state root, both declared fixture identities, and the workload deadline before dispatch. It is authorized only for the bound technical fixtures: never treat it as drawDB/Share, retained-data, deployment, publication, or owner-value acceptance. Preserve the external evidence manifest and require the terminal receipt to show `test_result.passed`, fixture count two, `vm_deleted=true`, `runtime_deleted=true`, `evidence_complete=true`, and `evidence_verified=true`.
+
+The connected-observer adapter requires the local `adapters/surfaces-connected.json` binding under the selected data root. It is disabled on a fresh Mac until separately reviewed inputs are configured. It reserves both 20 GiB fixture backings plus the host floor; its external task evidence remains bounded at 64 MiB, with an additional 2 MiB manager allowance. It cannot override a stale binding or a blocked fixture.
