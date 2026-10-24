@@ -20,7 +20,7 @@ uv sync --locked
 .venv/bin/python scripts/install.py
 ```
 
-The repository is private, so Git access requires authorization to `mikeylong/local-vm-manager-skill`. Follow your account-selection policy before GitHub operations. The chosen checkout path is used throughout; no particular username or home-directory path is required.
+The repository is public and can be cloned without authentication. Follow your account-selection policy before authenticated GitHub operations. The chosen checkout path is used throughout; no particular username or home-directory path is required.
 
 `bootstrap.py` installs pinned Lima and a sparse Debian ARM64 base. `bootstrap_node.py` downloads the Linux ARM64 Node archive for guest execution. They do not boot a VM. `settings.json` is created from the reviewed [defaults](settings.example.json) and stays untracked.
 
