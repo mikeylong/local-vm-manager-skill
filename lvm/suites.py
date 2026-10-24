@@ -1,5 +1,5 @@
 """Explicit trusted project browser entrypoints; no arbitrary command RPC."""
-from .manager import ManagerError
+from .manager import ManagerError,lock
 PROFILES={
  'surfaces':{
   'package':'surfaces',
@@ -27,9 +27,10 @@ def policy(profile,tests=None):
 def start(m,source_dir,profile,tests=None,label='browser-suites',owner_pid=None):
  from .playwright import snapshot
  _,tests=policy(profile,tests)
- payload,spec=snapshot(m,source_dir,tests,len(tests),suite_profile=profile)
- try:return m.start(label,owner_pid=owner_pid,workload=(payload,spec))
- finally:payload.unlink(missing_ok=True)
+ with lock(m.state/'snapshot.lock'):
+  payload,spec=snapshot(m,source_dir,tests,len(tests),suite_profile=profile)
+  try:return m.start(label,owner_pid=owner_pid,workload=(payload,spec))
+  finally:payload.unlink(missing_ok=True)
 
 def retained_git(source,commit='9c195f7',path='examples/local-product/app.tsx'):
  """Pack only the exact historical lookup's objects plus the source base commit."""

@@ -88,8 +88,8 @@ class Manager:
         return self
     def settings(self):
         x=read(self.root/'settings.json')
-        if x['max_concurrent']!=1:raise ManagerError('Pilot permits one concurrent guest')
-        return x
+        from .resources import validate
+        return validate(x)
     def path(self,job):
         if not re.fullmatch('[a-f0-9]{8}',job):raise ManagerError('Invalid job ID')
         return self.jobs/(job+'.json')
@@ -100,7 +100,11 @@ class Manager:
         if x['manager_id']!=self.owner['manager_id'] or x['job_id']!=job:raise ManagerError('Job owner mismatch')
         return x
     def inventory(self):
-        return {'scope':'only this manager; external VM stores are never queried',
+        from .resources import snapshot
+        with lock(self.state/'admission.lock'):
+            capacity=snapshot(self,self.settings())
+        return {'implementation':'resource-reservations-v2','source_sha256':sha(self.code_root/'lvm/manager.py'),
+                'capacity':capacity,'scope':'only this manager; external VM stores are never queried',
                 'code_root':str(self.code_root),'data_root':str(self.root),
                 'allocated_bytes':allocated(self.root), 'settings':self.settings(),
                 'jobs':[self.status(p.stem) for p in sorted(self.jobs.glob('*.json'))]}
@@ -110,14 +114,9 @@ class Manager:
         with lock(self.state/'admission.lock'):
             s=self.settings()
             special=bool(workload and workload[1].get('runner')=='surfaces-connected-observer')
-            active=[p for p in self.jobs.glob('*.json') if read(p)['state'] not in ('complete','failed')]
-            if active:raise ManagerError('An active or cleanup-blocked job already exists')
-            # The fixed Surfaces workload may retain one 20 GiB clean base and
-            # one 20 GiB execution disk at the same time.  Reserve both before
-            # creating any manager-owned state.
-            reserve_gib=40 if special else s['disk_gib']
-            if not special and allocated(self.root)+reserve_gib*GIB>s['storage_budget_gib']*GIB:raise ManagerError('Global storage reservation would exceed budget')
-            if shutil.disk_usage(self.root).free < (reserve_gib+s['free_floor_gib'])*GIB:raise ManagerError('Host free-space floor would be breached')
+            from .resources import claim,admit
+            reservation=claim(s,workload[1] if workload else None)
+            admission=admit(self,s,reservation)
             if not special:
                 if not self.lima.is_file() or not (self.root/'cache/debian.raw').is_file():raise ManagerError('Run scripts/bootstrap.py first')
                 if sha(self.lima)!=s['limactl_sha256'] or sha(self.root/'cache/debian.raw')!=s['image_sha256']:raise ManagerError('Pinned runtime dependency changed')
@@ -125,26 +124,56 @@ class Manager:
             if not start:raise ManagerError('Owner process is not alive')
             hard_deadline=workload[1]['absolute_deadline'] if special else time.time()+3600
             if hard_deadline<=time.time()+60 or hard_deadline>time.time()+21600:raise ManagerError('Invalid workload hard deadline')
-            job=uuid.uuid4().hex[:8]; d=self.runtime/job;d.mkdir()
-            home=d/'l';home.mkdir()
-            e=self.evidence/job;e.mkdir()
-            mark={'manager_id':self.owner['manager_id'],'job_id':job,'device':home.stat().st_dev,'inode':home.stat().st_ino}
-            atomic(d/'owner.json',mark)
-            x={**mark,'label':label,'profile':'surfaces-connected-observer' if special else 'linux-browser','created_at':time.time(),
-               'deadline':min(time.time()+lease_seconds,hard_deadline),'hard_deadline':hard_deadline,'owner_pid':owner_pid,'owner_start':start,
-               'state':'queued','captures':[],'exports':{},'peak_allocated_bytes':allocated(self.root),
-               'runtime_path':str(d),'evidence_path':str(e),'schema_version':1}
-            if workload:
-                payload,spec=workload
-                shutil.move(payload,d/'input.tar')
-                x.update(profile='surfaces-connected-observer' if special else 'linux-playwright',workload=spec,payload_sha256=sha(d/'input.tar'))
-                atomic(e/'source-manifest.json',spec)
-                x['exports']['source-manifest.json']={'bytes':(e/'source-manifest.json').stat().st_size,'sha256':sha(e/'source-manifest.json')}
+            for _ in range(100):
+                job=uuid.uuid4().hex[:8];d=self.runtime/job;e=self.evidence/job
+                if not any(p.exists() or p.is_symlink() for p in (self.path(job),d,e)):break
+            else:raise ManagerError('Cannot allocate an unused job identity')
+            x={'manager_id':self.owner['manager_id'],'job_id':job,'label':label,
+               'profile':'surfaces-connected-observer' if special else ('linux-playwright' if workload else 'linux-browser'),
+               'created_at':time.time(),'deadline':min(time.time()+lease_seconds,hard_deadline),
+               'hard_deadline':hard_deadline,'owner_pid':owner_pid,'owner_start':start,
+               'state':'allocating','allocation_pending':True,'captures':[],'exports':{},'peak_allocated_bytes':allocated(self.root),
+               'runtime_path':str(d),'evidence_path':str(e),'schema_version':2,
+               'reservation':reservation,'admission':{'held_jobs_before':admission['held_job_count'],
+                 'committed_storage_before':admission['committed_storage_bytes'],'host':admission['host']}}
+            if workload:x['workload']=workload[1]
+            # Durable reservation precedes runtime creation. Crashes cannot lose a claim.
             atomic(self.path(job),x)
-            self.spawn(job)
+            try:
+                e.mkdir();d.mkdir()
+                x['runtime_identity']={'device':d.stat().st_dev,'inode':d.stat().st_ino}
+                atomic(self.path(job),x)
+                home=d/'l';home.mkdir()
+                x.update(device=home.stat().st_dev,inode=home.stat().st_ino)
+                atomic(d/'owner.json',{k:x[k] for k in ('manager_id','job_id','device','inode')})
+                if workload:
+                    payload,spec=workload;shutil.move(payload,d/'input.tar')
+                    x['payload_sha256']=sha(d/'input.tar')
+                    atomic(e/'source-manifest.json',spec)
+                    x['exports']['source-manifest.json']={'bytes':(e/'source-manifest.json').stat().st_size,'sha256':sha(e/'source-manifest.json')}
+                x['allocation_pending']=False;x['state']='queued';atomic(self.path(job),x)
+                self.spawn(job)
+            except BaseException as error:
+                x.update(state='cleanup_blocked',error='Preparation failed: '+str(error),preparation_failed=True)
+                if e.is_dir():
+                    atomic(e/'preparation-error.json',{'error':x['error'],'job_id':job})
+                    f=e/'preparation-error.json';x['exports'][f.name]={'bytes':f.stat().st_size,'sha256':sha(f)}
+                atomic(self.path(job),x)
+                raise
             return self.status(job)
+    def check_job_budget(self,x):
+        from .resources import job_claim,usage
+        reservation=job_claim(self.settings(),x);runtime,evidence=usage(self,x,reservation)
+        x['peak_runtime_allocated_bytes']=max(x.get('peak_runtime_allocated_bytes',0),runtime)
+        if runtime>reservation['runtime_bytes']:raise ManagerError('This job exceeded its reserved runtime storage')
+        if evidence>reservation['evidence_bytes']:raise ManagerError('This job exceeded its reserved evidence storage')
+        if shutil.disk_usage(self.root).free<self.settings()['free_floor_gib']*GIB:
+            raise ManagerError('Host emergency free-space floor breached')
     def spawn(self,job):
-        log=(self.evidence/job/'supervisor.log').open('ab',buffering=0)
+        path=self.evidence/job
+        if path.is_symlink():raise ManagerError('Symlinked job evidence directory')
+        path.mkdir(exist_ok=True)
+        log=(path/'supervisor.log').open('ab',buffering=0)
         try:
             subprocess.Popen([sys.executable,'-m','lvm.cli','supervise',job],cwd=self.code_root,env={**os.environ,'LVM_DATA_ROOT':str(self.root)},
                              stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,close_fds=True)
@@ -213,7 +242,7 @@ class Manager:
                     if time.monotonic()-last_check>5:
                         last_check=time.monotonic(); size=allocated(self.root)
                         x['peak_allocated_bytes']=max(x['peak_allocated_bytes'],size)
-                        if watch and (size>self.settings()['storage_budget_gib']*GIB or shutil.disk_usage(self.root).free<self.settings()['free_floor_gib']*GIB):raise ManagerError('Storage budget or host free-space floor exceeded')
+                        if watch:self.check_job_budget(x)
                     limit=(self.settings()['evidence_mib'] if output is not None else 16)*1024**2
                     if out.stat().st_size>limit:raise ManagerError('Command output limit exceeded')
                     time.sleep(.25)
@@ -246,9 +275,9 @@ chmod 755 /opt/lvm-capture.py
                 provision += 'apt-get install -y --no-install-recommends '+packages+'\napt-get clean\n'
                 helper=base64.b64encode((self.code_root/'lvm/guest_suites.py').read_bytes()).decode()
                 provision += "printf '%s' "+helper+" | base64 -d > /opt/lvm-suites.py\n"
-        s=self.settings()
-        return {'vmType':'vz','arch':'aarch64','plain':True,'cpus':2,'memory':s['memory_gib'].__str__()+'GiB',
-                'disk':str(s['disk_gib'])+'GiB','images':[{'location':str(self.root/'cache/debian.raw'),
+        s=self.settings();reservation=x.get('reservation',{})
+        return {'vmType':'vz','arch':'aarch64','plain':True,'cpus':reservation.get('vcpus',s['cpus']),'memory':str(reservation.get('guest_memory_gib',s['memory_gib']))+'GiB',
+                'disk':str(reservation.get('guest_disk_gib',s['disk_gib']))+'GiB','images':[{'location':str(self.root/'cache/debian.raw'),
                 'arch':'aarch64','digest':'sha256:'+s['image_sha256']}],
                 'mounts':[],'containerd':{'system':False,'user':False},'ssh':{'forwardAgent':False},
                 'portForwards':[], 'provision':[{'mode':'system','script':provision}]}
@@ -299,6 +328,20 @@ chmod 755 /opt/lvm-capture.py
     def cleanup(self,x):
         if not (self.runtime/x['job_id']).exists() and x.get('deletion_intent'):
             x.update(vm_deleted=True,runtime_deleted=True,remaining_runtime_bytes=0);return
+        d=self.runtime/x['job_id']
+        if not d.exists() and (x.get('preparation_failed') or x.get('allocation_pending')):
+            x.update(vm_deleted=True,runtime_deleted=True,remaining_runtime_bytes=0);return
+        if not (d/'owner.json').exists() or not (d/'l').exists():
+            expected=x.get('runtime_identity');st=d.stat()
+            if d.is_symlink() or d.resolve()!=d or not expected or (st.st_dev,st.st_ino)!=(expected['device'],expected['inode']):
+                raise ManagerError('Partial runtime allocation identity cannot be verified')
+            if any(p.name not in ('l','input.tar','tmp') for p in d.iterdir()) or self.holders(d):
+                raise ManagerError('Partial runtime has unknown entries or open handles')
+            if (d/'l').exists() and any((d/'l').iterdir()):raise ManagerError('Unmarked partial guest is not empty')
+            st=d.stat()
+            if (st.st_dev,st.st_ino)!=(expected['device'],expected['inode']):raise ManagerError('Partial runtime changed before deletion')
+            x['deletion_intent']=True;atomic(self.path(x['job_id']),x);shutil.rmtree(d)
+            x.update(vm_deleted=True,runtime_deleted=True,remaining_runtime_bytes=0);return
         home=self.home(x)
         unexpected=[p.name for p in home.iterdir() if p.is_dir() and p.name!='guest' and not p.name.startswith(('_','.'))]
         if unexpected:raise ManagerError('Unrecognized instance inside owned namespace; refusing deletion')
@@ -332,6 +375,9 @@ chmod 755 /opt/lvm-capture.py
         x=self.status(job)
         if x['state'] in ('complete','failed'):return
         recovering=x['state']!='queued'
+        if x.get('cleanup_error'):
+            entry={'at':x.get('finished_at'),'error':x['cleanup_error']}
+            if entry not in x.setdefault('cleanup_failures',[]):x['cleanup_failures'].append(entry)
         x['recovery_attempts']=x.get('recovery_attempts',0)+(1 if recovering else 0)
         x['supervisor_pid']=os.getpid();x['supervisor_start']=identity(os.getpid())
         reason='supervisor_recovery' if recovering else None
@@ -385,7 +431,7 @@ chmod 755 /opt/lvm-capture.py
                     if not read(self.evidence/job/(request+'-result.json'))['passed']:raise ManagerError('Browser capture failed')
                     x['state']='ready';atomic(self.path(job),x)
                 size=allocated(self.root);x['peak_allocated_bytes']=max(x['peak_allocated_bytes'],size)
-                if size>self.settings()['storage_budget_gib']*GIB:raise ManagerError('Storage budget exceeded')
+                self.check_job_budget(x)
                 time.sleep(1)
         except Cancelled as e:reason=str(e)
         except BaseException as e:x['error']=str(e);reason='run_failed'
@@ -401,10 +447,14 @@ chmod 755 /opt/lvm-capture.py
                     else:
                         from . import playwright
                         playwright.export(self,x)
-            x['evidence_complete']=all(request+'-'+name in x['exports'] for request in x['captures'] for name in EXPORTS)
+            if x.get('preparation_failed') or x.get('allocation_pending'):
+                path=self.evidence/job/'preparation-error.json'
+                if not path.exists():atomic(path,{'job_id':job,'error':x.get('error','Interrupted while allocating runtime')})
+                x['exports'][path.name]={'bytes':path.stat().st_size,'sha256':sha(path)}
+            x['evidence_complete']=not (x.get('preparation_failed') or x.get('allocation_pending')) and all(request+'-'+name in x['exports'] for request in x['captures'] for name in EXPORTS)
             if x.get('workload'):
                 x['evidence_complete']=bool(x.get('test_result'))
-            if not x['evidence_complete']:x['error']='Capture interrupted before all evidence was produced; available evidence retained'
+            if not x['evidence_complete']:x.setdefault('error','Capture interrupted before all evidence was produced; available evidence retained')
             x['evidence_verified']=all((self.evidence/job/k).is_file() and sha(self.evidence/job/k)==v['sha256'] for k,v in x['exports'].items())
             if not x['evidence_verified']:raise ManagerError('Host evidence verification failed; refusing deletion')
             if x.get('workload',{}).get('runner')=='surfaces-connected-observer':
@@ -412,15 +462,22 @@ chmod 755 /opt/lvm-capture.py
                 surfaces_connected.cleanup(self,x)
             else:self.cleanup(x)
             x['state']='failed' if x.get('error') else 'complete'
+            x.pop('cleanup_error',None)
         except BaseException as e:x['state']='cleanup_blocked';x['cleanup_error']=str(e)
         x['finished_at']=time.time();x['retained_evidence_bytes']=sum(v['bytes'] for v in x['exports'].values())
-        atomic(self.path(job),x)
+        with lock(self.state/'admission.lock'):
+            if x.get('vm_deleted') and x.get('runtime_deleted') and x.get('evidence_verified'):
+                x['reservation_released_at']=time.time()
+            atomic(self.path(job),x)
     def sweep(self):
-        recovered=[]
-        for p in self.jobs.glob('*.json'):
-            x=self.status(p.stem)
-            if x['state'] in ('complete','failed') or x.get('recovery_attempts',0)>=3:continue
-            pid=x.get('supervisor_pid')
-            if not pid or identity(pid)!=x.get('supervisor_start'):
-                self.spawn(x['job_id']);recovered.append(x['job_id'])
-        return {'recovery_started':recovered}
+        # Admission publishes the reservation and ownership marker as one operation.
+        # Recovery must not observe the intermediate allocation record.
+        with lock(self.state/'admission.lock'):
+            recovered=[]
+            for p in self.jobs.glob('*.json'):
+                x=self.status(p.stem)
+                if x['state'] in ('complete','failed') or x.get('recovery_attempts',0)>=3:continue
+                pid=x.get('supervisor_pid')
+                if not pid or identity(pid)!=x.get('supervisor_start'):
+                    self.spawn(x['job_id']);recovered.append(x['job_id'])
+            return {'recovery_started':recovered}

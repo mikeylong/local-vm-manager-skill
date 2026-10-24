@@ -1,6 +1,6 @@
 """Bounded web-source snapshots and verified Playwright evidence export."""
 import io,json,os,pathlib,shutil,tarfile,tempfile
-from .manager import ManagerError,atomic,read,sha
+from .manager import ManagerError,atomic,read,sha,lock
 ROOTS={'src','api','scripts','tests','public','brand','website-assets'}
 ROOT_FILES={'package.json','package-lock.json','playwright.config.ts','index.html','robots.txt'}
 EXCLUDED={'node_modules','.git','ios','macos','native','data','.env','output','dist'}
@@ -83,9 +83,10 @@ def snapshot(m,source_dir,tests,expected_tests,suite_profile=None):
     except BaseException:tmp.unlink(missing_ok=True);raise
 
 def start(m,source_dir,tests,expected_tests,label='playwright',owner_pid=None):
-    payload,spec=snapshot(m,source_dir,tests,expected_tests)
-    try:return m.start(label,owner_pid=owner_pid,workload=(payload,spec))
-    finally:payload.unlink(missing_ok=True)
+    with lock(m.state/'snapshot.lock'):
+        payload,spec=snapshot(m,source_dir,tests,expected_tests)
+        try:return m.start(label,owner_pid=owner_pid,workload=(payload,spec))
+        finally:payload.unlink(missing_ok=True)
 
 def run(m,x):
     payload=m.runtime/x['job_id']/'input.tar';remote='/tmp/lvm-playwright-input.tar'

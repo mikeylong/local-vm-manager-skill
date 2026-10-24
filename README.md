@@ -91,13 +91,15 @@ bin/lvm surfaces-connected-observer --label surfaces-connected-observer
 
 The matching MCP tool is `vm_run_surfaces_connected_observer(label)`. Neither interface accepts arbitrary commands, source directories, fixtures, budgets, or runtime names. A fresh installation leaves this profile disabled. It requires a separately reviewed `adapters/surfaces-connected.json` in the data root, containing schema version 1, the exact task/project/state/script/Node/tsx paths, fixed launch/expectation/Node sizes and SHA-256 pins, and the tsx tree digest. The current Mac's binding is retained locally and excluded from Git; installing on another Mac does not copy its task data or authorization.
 
-Dispatch verifies the reviewed independent expectation, source pins, fresh owned state, and deadlines. The workload also seals the adapter configuration and canonical manager source hashes. Changed or expired bindings block dispatch. This migration does not renew a binding, fix the observer preparation blocker, or rerun those fixtures. A future authorized fixture run needs its own current reviewed binding.
+Dispatch verifies the reviewed independent expectation, source pins, fresh owned state, and deadlines. The workload also seals the adapter configuration and canonical manager source hashes. Changed or expired bindings block dispatch. This migration does not renew a binding, fix the observer preparation blocker, or rerun those fixtures. Recovery authenticates and reuses the original external evidence manifest. An empty pre-pointer directory is removable only with recorded fresh-state intent, matching device/inode, private mode, no entries, and no open handles; that path uses `rmdir` only. Original failed results and incomplete fixture evidence remain failed/incomplete. A future authorized fixture run needs its own current reviewed binding.
 
-This specialized profile reserves two 20 GiB fixture backings plus the host floor, separately from the ordinary browser profile's 20 GiB storage reservation. Task evidence is capped at 64 MiB, with a 2 MiB manager allowance; the bound task maintains its nonrefunded evidence accounting. Evidence manifests and identity/open-handle checks gate deletion of only the fresh marked runtime. Results are technical fixture evidence and do not establish product, native, Safari, or deployment acceptance.
+This specialized profile reserves two 20 GiB fixture backings plus up to 2 GiB runtime assets within the shared resource policy. Task evidence is capped at 64 MiB, with a 2 MiB manager allowance; the bound task maintains its nonrefunded evidence accounting. Evidence manifests and identity/open-handle checks gate deletion of only the fresh marked runtime. Results are technical fixture evidence and do not establish product, native, Safari, or deployment acceptance.
 
 ## MCP workflow
 
 Use `vm_inventory`, then `vm_start` and `vm_capture` for page captures, or `vm_run_playwright` / `vm_run_browser_suites` for supported suites. MCP starts return while provisioning. Renew with `vm_renew` at least every 30 seconds and poll `vm_status`; status reads do not renew the lease. Call `vm_finish` for capture jobs after success or failure. Suite jobs export and clean up automatically.
+
+Require `implementation=resource-reservations-v2` in inventory before using an existing connection. Its `capacity` result shows held reservations and unaccounted state. Stale clients must reconnect or use the canonical CLI.
 
 The default lease is two minutes and the hard job deadline is one hour. The host supervisor handles owner death and lease expiry. The independent LaunchAgent recovers interrupted supervisors, with at most three automatic recovery attempts. Recovery after a real host reboot has not been exercised in the original pilot.
 
@@ -105,15 +107,31 @@ The default lease is two minutes and the hard job deadline is one hour. The host
 
 `evidence/JOB_ID/` retains only the allowlisted artifacts for that job. Depending on the workload, these include screenshots, rendered HTML, logs, JSON/HTML reports, traces, source hashes, and browser environment versions. Bundles and extracted files are checked by SHA-256 and size before runtime deletion. OS disks, browser profiles, credentials, dependency trees, and toolchains are excluded from routine evidence.
 
-Before reporting completion, verify `vm_deleted=true`, `runtime_deleted=true`, `evidence_complete=true`, and `evidence_verified=true`. Report the test result separately. Failed tests still retain diagnostics and require cleanup. `cleanup_blocked` is unfinished work: preserve the diagnostics and resolve only manager-owned cleanup before another run.
+Before reporting completion, verify `vm_deleted=true`, `runtime_deleted=true`, `evidence_complete=true`, and `evidence_verified=true`. Report the test result separately. Failed tests still retain diagnostics and require cleanup. `cleanup_blocked` is unfinished work: preserve the diagnostics and resolve that job’s owned cleanup. Other jobs can run when admission confirms safe remaining capacity; a failed job’s reservation cannot be ignored or cleared manually.
 
 The controller deletes only its own marked runtime namespace after identity and open-file checks. It never adopts, starts, stops, resizes, prunes, or deletes existing external VMs. It does not query the default Lima/Tart registries for lifecycle operations. Native macOS/iOS, Xcode, simulator, and device tests remain outside this implementation.
 
 ## Disk limits and Git hygiene
 
-Defaults are 2 CPUs, 2 GiB RAM, a 12 GiB virtual guest disk, one active job, a 20 GiB allocated-storage budget for the selected ordinary browser data root, a 10 GiB host free-space floor, and a 250 MiB evidence allowance per job. Admission reserves the guest disk and runtime checks monitor usage. These are monitored limits, not a filesystem hard quota. APFS shared extents can be counted more than once, so allocation is not exclusive reclaimable space.
+Ordinary guests use 2 virtual CPUs, 2 GiB RAM, and a 12 GiB virtual disk. The default shared policy admits up to three independent jobs and four guests, capped at 12 virtual CPUs, 16 GiB guest RAM, and 80 GiB of committed storage. The installer adapts CPU/RAM limits to a smaller Mac; inventory reports the effective policy. The development Mac has 16 cores and 128 GiB RAM. Fresh admission also checks available-memory estimates and disk space, preserving a 16 GiB host-memory floor and 10 GiB disk floor on that Mac.
 
-Evidence accumulates and counts toward the budget. New runs are refused when space cannot be reserved; old evidence is never automatically pruned. One reusable Debian base and downloaded dependencies remain cached between runs. Guest runtime disks are deleted after evidence verification.
+Reservations are persisted in each job record under the admission lock **before** creating runtime directories. They include runtime growth (16 GiB per ordinary job including the guest backing and runtime overhead), evidence export/extraction headroom, and a serialized 256 MiB source-staging allowance. Admission counts actual storage plus the unused portion of every active or stranded reservation. Existing evidence and reusable dependency/base-image storage remain in actual usage. Allocation figures can count shared APFS extents more than once; they are not exclusive reclaimable space or a filesystem quota.
+
+A cleanup-blocked job remains visible and retains its CPU/RAM/guest/storage claim until its owned runtime is verified deleted. It does not impose a global stop on other jobs. A per-job storage overrun cancels that job; an actual host disk emergency can still stop writes. Unknown runtime directories, ownership mismatches, or conflicting external runtime claims fail admission closed. Jobs keep independent `LIMA_HOME`, inputs, leases, source identities, and evidence paths.
+
+The fixed Surfaces profile counts as two guests, 8 virtual CPUs, and 10 GiB RAM, with a 42 GiB external runtime envelope and its evidence allowances. It exclusively reserves its reviewed state path, so two copies cannot share that path. The ordinary browser profile remains available alongside it when all shared limits fit.
+
+Evidence accumulates and counts toward the budget. New runs are refused when space cannot be reserved; old evidence is never automatically pruned. Guest runtime disks are deleted only after exported evidence verification. Existing native workflows and external VMs remain outside this manager’s authority.
+
+To upgrade an existing single-job installation without replacing its owner identity or evidence:
+
+```sh
+.venv/bin/python scripts/configure_resources.py --dry-run
+.venv/bin/python scripts/configure_resources.py
+.venv/bin/python scripts/install.py
+```
+
+Stop active manager jobs before upgrading. A known cleanup-blocked job can remain accounted for; unknown storage cannot. The upgrade backs up the previous settings under the existing data root’s `state/resource-policy-backups/`. Reinstalling invokes the same migration and leaves an established resource policy unchanged.
 
 [.gitignore](.gitignore) excludes runtime/state, evidence, caches, downloaded tools and images, virtual environments, generated settings, verification output, archives, and credential filenames. Commit only reviewed source changes; ignore rules do not sanitize source code or authorize `git add -f`. Never add a guest disk or preserved evidence to Git.
 
@@ -146,6 +164,14 @@ Each check retains local evidence and verifies guest/runtime deletion. Runtime v
 
 ## Current validation
 
-The portable baseline passed 40 unit tests, a real stdio MCP check, and three Linux capture pilots: normal completion, agent-client SIGKILL, and supervisor SIGKILL recovered by its separate launch service. All three preserved verified evidence and deleted their guests and runtime directories. These checks ran on an Apple Silicon development Mac with a fresh Python environment and downloaded dependencies; a second physical Mac has not been tested. Raw receipts, evidence, and verification reports remain local and excluded from Git.
+The concurrent implementation passes 77 unit tests covering process races, bounded admission, unknown-state rejection, frozen guest dimensions, job-ID collision safety, partial allocation, owner/supervisor recovery, and exact Surfaces cleanup. A real MCP transport check reports `implementation=resource-reservations-v2` and all nine supported tools.
 
-The canonical-source migration passes 54 browser-free unit tests, including isolated source/storage, legacy-registration, and fixed-adapter contract checks. The migrated installation also passed new normal, agent-client SIGKILL, and supervisor SIGKILL capture pilots. Each retained verified evidence and deleted its guest/runtime. Preservation checks found all 3,407 historical evidence files, 44 historical receipts, and 97 external VM disk identities/configurations unchanged. Migration verification retains its own new reports without overwriting earlier receipts or evidence.
+Real Linux checks overlap independent browser jobs, keep a healthy guest usable while another cleanup is blocked, admit new work when capacity remains, and recover agent and supervisor crashes. Every newly created test guest must finish with verified evidence and runtime deletion. The old Surfaces preparation failure remains failed with incomplete fixture evidence; only its authenticated cleanup is reconciled. Raw receipts and preservation reports stay local and excluded from Git. These checks ran on the development Apple Silicon Mac; a second physical Mac has not been tested.
+
+For explicit concurrent lifecycle acceptance (creates new owned Linux guests):
+
+```sh
+.venv/bin/python scripts/verify_concurrency.py
+```
+
+The harness overlaps two independently owned browser workloads, intentionally holds an open handle to block one job’s cleanup, verifies the other still executes, admits new jobs with safe capacity remaining, and exercises agent/supervisor crash cleanup. `--reconcile-job JOB_ID` additionally permits cleanup-only recovery of that exact pre-existing blocked Surfaces job after fresh ownership/evidence checks; never pass an unrelated job. It does not rerun either Surfaces fixture. Reports stay under ignored `verification/`, with all job evidence retained in the configured data root.
