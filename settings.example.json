@@ -3,7 +3,7 @@
   "memory_gib": 2,
   "storage_budget_gib": 80,
   "free_floor_gib": 10,
-  "evidence_mib": 250,
+  "evidence_mib": 1024,
   "max_concurrent": 3,
   "image_url": "https://cloud.debian.org/images/cloud/bookworm/20261021-2638/debian-12-genericcloud-arm64-20261021-2638.tar.xz",
   "image_archive_sha512": "fcee82a742170174086d5073e2f383d583d1716218751715116647fc25c431f86f3117947d518a6f19ca8979b3110e058e94d0ed0e3b2772dda00a3807e5b990",
@@ -19,5 +19,6 @@
   "host_memory_floor_gib": 16,
   "host_cpu_reserve": 4,
   "runtime_overhead_gib": 4,
-  "staging_mib": 256
+  "staging_mib": 256,
+  "evidence_policy_version": 1
 }

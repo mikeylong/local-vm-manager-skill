@@ -8,7 +8,7 @@ VERSION=2
 DEFAULTS={'resource_policy_version':2,'cpus':2,'disk_gib':12,'memory_gib':2,
           'max_concurrent':3,'max_guest_count':4,'max_vcpus':12,'max_memory_gib':16,
           'storage_budget_gib':80,'free_floor_gib':10,'host_memory_floor_gib':16,
-          'host_cpu_reserve':4,'runtime_overhead_gib':4,'staging_mib':256,'evidence_mib':250}
+          'host_cpu_reserve':4,'runtime_overhead_gib':4,'staging_mib':256,'evidence_mib':1024}
 
 
 def host_capacity(root):
@@ -41,6 +41,7 @@ def configured_policy(previous,host):
     x={**previous,**DEFAULTS}
     for key in ('disk_gib','memory_gib','cpus','evidence_mib','free_floor_gib'):
         if key in previous:x[key]=previous[key]
+    x.update(evidence_mib=1024,evidence_policy_version=1)
     x['host_cpu_reserve']=max(2,min(4,host['logical_cpus']//4))
     x['host_memory_floor_gib']=max(4,min(16,host['memory_bytes']//GIB//4))
     x['max_vcpus']=min(12,max(0,host['logical_cpus']-x['host_cpu_reserve']))
@@ -183,7 +184,8 @@ def configure(m,*,dry_run=False):
                 raise ManagerError('Stop active jobs before upgrading resource policy')
         previous=read(m.root/'settings.json');host=host_capacity(m.root)
         configured=m.state/'resource-policy.json'
-        selected=validate(previous) if previous.get('resource_policy_version')==VERSION and configured.exists() else configured_policy(previous,host)
+        selected=validate(previous.copy()) if previous.get('resource_policy_version')==VERSION and configured.exists() else configured_policy(previous,host)
+        if selected.get('evidence_policy_version')!=1:selected.update(evidence_mib=1024,evidence_policy_version=1)
         state=snapshot(m,selected,host)
         if state['unknown_state']:raise ManagerError('Cannot upgrade with unaccounted runtime: '+str(state['unknown_state']))
         changed=selected!=previous

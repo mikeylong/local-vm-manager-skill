@@ -117,6 +117,18 @@ def extract(bundle,target,limit):
             os.replace(part,dest)
     return {**manifest,'manifest.json':{'bytes':(target/'manifest.json').stat().st_size,'sha256':sha(target/'manifest.json')}}
 
+LEGACY_GUEST_HELPER_SHA256='c8738e9deaffd7d5e7882f43113fa71278c7bb1f1af790c27d420f90fcb35f87'
+
+def evidence_probe_command():
+    # Read only the same evidence allowlist as extraction; never read workspace/cache.
+    lines=["import pathlib,json,hashlib", "root=pathlib.Path('/tmp/lvm-playwright-evidence')",
+           "allowed="+repr(set(ALLOWED_EVIDENCE)), "entries={}",
+           "for p in sorted(root.rglob('*')):", " rel=p.relative_to(root)",
+           " if rel.parts[0] not in allowed:continue", " if p.is_symlink():raise RuntimeError('Symlink in evidence')",
+           " if p.is_file():entries[str(rel)]={'bytes':p.stat().st_size,'sha256':'0'*64}",
+           "print(json.dumps({'bytes':sum(v['bytes'] for v in entries.values()),'manifest_bytes':len(json.dumps({'schema_version':1,'files':entries},indent=2).encode()),'files':len(entries),'helper_sha256':hashlib.sha256(pathlib.Path('/opt/lvm-playwright.py').read_bytes()).hexdigest()}))"]
+    return ['shell','guest','--','python3','-c','\n'.join(lines)]
+
 def recovery_seal_command(limit,helper_sha):
     # Execute only the original helper's seal function under its newly reserved cap.
     # The on-disk helper and all original evidence files remain unchanged.
@@ -147,15 +159,20 @@ if matched:time.sleep(6)
 if any(p.exists() for p in matched):raise RuntimeError('Workload runner did not stop')
 """
     m.command(x,['shell','guest','--','python3','-c',stop],watch=False,timeout=20)
-    # Fixed script in this owned guest; sealing is bounded and exports no workspace/cache.
-    seal_command=['shell','guest','--','python3','/opt/lvm-playwright.py','seal']
-    if x.get('approved_export_limit_bytes'):
-        seal_command=recovery_seal_command(m.evidence_limit(x),sha(m.code_root/'lvm/guest_playwright.py'))
-    m.command(x,seal_command,watch=False,output=meta,timeout=60)
+    probe=root/'playwright-measure.meta-part'
+    m.command(x,evidence_probe_command(),watch=False,output=probe,timeout=60)
+    measured=read(probe);probe.unlink()
+    expected=x.get('guest_helper_sha256',LEGACY_GUEST_HELPER_SHA256)
+    if measured['helper_sha256']!=expected:raise ManagerError('Original guest helper identity cannot be verified')
+    total=measured['bytes']+measured['manifest_bytes']
+    m.reserve_evidence(x,total,measured_bytes=measured['bytes'])
+    seal_command=recovery_seal_command(m.evidence_limit(x),expected)
+    m.command(x,seal_command,watch=False,output=meta,timeout=min(600,60+total//(64*1024**2)*10))
     receipt=read(meta);meta.unlink()
-    if receipt['path']!='/tmp/lvm-playwright/evidence.tar.gz' or receipt['bytes']>m.evidence_limit(x):raise ManagerError('Invalid evidence bundle receipt')
+    if receipt['path']!='/tmp/lvm-playwright/evidence.tar.gz' or type(receipt['bytes']) is not int or receipt['bytes']<0:raise ManagerError('Invalid evidence bundle receipt')
+    m.reserve_evidence(x,max(total,receipt['bytes']),measured_bytes=measured['bytes'])
     bundle=root/'playwright-evidence.tar.gz.part'
-    m.command(x,['shell','guest','--','cat',receipt['path']],watch=False,output=bundle,timeout=90)
+    m.command(x,['shell','guest','--','cat',receipt['path']],watch=False,output=bundle,timeout=min(600,90+receipt['bytes']//(32*1024**2)*10))
     if bundle.stat().st_size!=receipt['bytes'] or sha(bundle)!=receipt['sha256']:raise ManagerError('Evidence bundle readback mismatch')
     files=extract(bundle,root/'playwright',m.evidence_limit(x))
     x['exports'].update({'playwright/'+k:v for k,v in files.items()})

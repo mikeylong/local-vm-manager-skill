@@ -8,6 +8,7 @@ from lvm.playwright import recovery_seal_command
 class ExportBudgetTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(dir='/private/tmp',prefix='lvm-export-budget-');self.root=pathlib.Path(self.temp.name).resolve();self.m=fixture(self.root)
+        policy=self.m.settings();policy['evidence_mib']=250;atomic(self.root/'settings.json',policy)
         self.host=patch('lvm.resources.host_capacity',return_value=HOST);self.host.start()
         with patch.object(self.m,'spawn'):self.x=self.m.start('failed-export')
         self.x.update(state='cleanup_blocked',profile='linux-playwright',workload_started=True,supervisor_pid=99999999,supervisor_start='absent',error='original failure')
@@ -25,10 +26,10 @@ class ExportBudgetTests(unittest.TestCase):
         original=self.m.path(self.x['job_id']).read_bytes()
         capacity={'unknown_state':[],'committed_storage_bytes':80*GIB-1,'physical_reservation_headroom_bytes':0,'host':HOST}
         with patch('lvm.resources.snapshot',return_value=capacity),patch.object(self.m,'_supervise') as supervise:
-            with self.assertRaisesRegex(ManagerError,'shared storage budget'):self.m.recover_export(self.x['job_id'],352)
+            with self.assertRaisesRegex(ManagerError,'shared storage capacity'):self.m.recover_export(self.x['job_id'],352)
         self.assertEqual(self.m.path(self.x['job_id']).read_bytes(),original);supervise.assert_not_called()
     def test_active_or_invalid_cap_rejected(self):
-        for value in (0,250,513):
+        for value in (0,250,-1,True):
             with self.assertRaises(ManagerError):self.m.recover_export(self.x['job_id'],value)
         self.x['state']='testing';atomic(self.m.path(self.x['job_id']),self.x)
         with self.assertRaisesRegex(ManagerError,'blocked'):self.m.recover_export(self.x['job_id'],352)
