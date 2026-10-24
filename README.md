@@ -175,3 +175,17 @@ For explicit concurrent lifecycle acceptance (creates new owned Linux guests):
 ```
 
 The harness overlaps two independently owned browser workloads, intentionally holds an open handle to block one job’s cleanup, verifies the other still executes, admits new jobs with safe capacity remaining, and exercises agent/supervisor crash cleanup. `--reconcile-job JOB_ID` additionally permits cleanup-only recovery of that exact pre-existing blocked Surfaces job after fresh ownership/evidence checks; never pass an unrelated job. It does not rerun either Surfaces fixture. Reports stay under ignored `verification/`, with all job evidence retained in the configured data root.
+
+## Recover an oversized failed export
+
+A completed test run can produce more diagnostics than the default 250 MiB allowance. Keep the guest and its reservation until all required evidence is recovered. Do not rerun the tests, remove traces, or clear its reservation to make export fit.
+
+After measuring the evidence and authorizing a cap for that one job, use the canonical CLI:
+
+```sh
+bin/lvm recover-export JOB_ID --evidence-mib 352
+```
+
+The command accepts only an already-started Playwright job in `cleanup_blocked` with no live supervisor. The cap must increase and may not exceed 512 MiB. Job ID, ownership, evidence-directory identity, and fresh shared capacity are checked before mutation. The evidence reservation grows atomically to at least three times the new allowance plus 16 MiB; an existing larger reservation is never reduced. Insufficient capacity refuses the operation without changing the job. The global default and other job allowances stay unchanged.
+
+Recovery verifies the original guest helper hash and invokes only its sealing function under the approved cap. It preserves every original evidence path and byte, including repeated trace copies, then performs the normal bundle/file verification and owned-runtime cleanup. A failed test result remains failed even when cleanup succeeds. Inspect the terminal receipt's result and all evidence/deletion flags separately. This command creates no VM and does not rerun tests. Run it outside the macOS shell sandbox with approval for that invocation.

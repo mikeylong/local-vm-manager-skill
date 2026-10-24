@@ -161,6 +161,38 @@ class Manager:
                 atomic(self.path(job),x)
                 raise
             return self.status(job)
+    def evidence_limit(self,x):
+        return x.get('approved_export_limit_bytes',self.settings()['evidence_mib']*1024**2)
+    def recover_export(self,job,limit_mib):
+        """Explicit, bounded export-only recovery; never starts the test runner."""
+        if type(limit_mib) is not int or not 1<=limit_mib<=512:raise ManagerError('Recovery export limit must be 1..512 MiB')
+        self.path(job) # validate the ID before constructing or opening any lock path
+        with lock(self.state/(job+'.supervisor.lock'),blocking=False):
+            with lock(self.state/'admission.lock'):
+                x=self.status(job)
+                if x['state']!='cleanup_blocked' or x.get('profile')!='linux-playwright' or not x.get('workload_started'):
+                    raise ManagerError('Export recovery requires a blocked, already-started Playwright job')
+                pid=x.get('supervisor_pid')
+                if pid and identity(pid)==x.get('supervisor_start'):raise ManagerError('The existing job supervisor is still running')
+                self.home(x)
+                evidence=self.evidence/job
+                if evidence.is_symlink() or evidence.resolve()!=evidence or not evidence.is_dir():raise ManagerError('Recovery evidence directory is unsafe')
+                previous_limit=self.evidence_limit(x);new_limit=limit_mib*1024**2
+                if new_limit<=previous_limit:raise ManagerError('Recovery limit must increase this job allowance')
+                from .resources import snapshot,job_claim
+                policy=self.settings();capacity=snapshot(self,policy)
+                if capacity['unknown_state']:raise ManagerError('Unaccounted runtime state prevents recovery budget change')
+                reservation=job_claim(policy,x).copy();old_reserved=reservation['evidence_bytes']
+                new_reserved=max(old_reserved,3*new_limit+16*1024**2);delta=new_reserved-old_reserved
+                if capacity['committed_storage_bytes']+delta>policy['storage_budget_gib']*GIB:
+                    raise ManagerError('Recovery evidence reservation exceeds shared storage budget')
+                if capacity['physical_reservation_headroom_bytes']+delta+policy['staging_mib']*1024**2+policy['free_floor_gib']*GIB>capacity['host']['disk_free_bytes']:
+                    raise ManagerError('Recovery evidence reservation breaches host free-space floor')
+                x.setdefault('export_recovery_history',[]).append({'at':time.time(),'previous_limit_bytes':previous_limit,'approved_limit_bytes':new_limit,'previous_reserved_bytes':old_reserved,'reserved_bytes':new_reserved})
+                reservation['evidence_bytes']=new_reserved;x['reservation']=reservation;x['approved_export_limit_bytes']=new_limit
+                atomic(self.path(job),x)
+            self._supervise(job)
+            return self.status(job)
     def check_job_budget(self,x):
         from .resources import job_claim,usage
         reservation=job_claim(self.settings(),x);runtime,evidence=usage(self,x,reservation)
@@ -243,7 +275,7 @@ class Manager:
                         last_check=time.monotonic(); size=allocated(self.root)
                         x['peak_allocated_bytes']=max(x['peak_allocated_bytes'],size)
                         if watch:self.check_job_budget(x)
-                    limit=(self.settings()['evidence_mib'] if output is not None else 16)*1024**2
+                    limit=self.evidence_limit(x) if output is not None else 16*1024**2
                     if out.stat().st_size>limit:raise ManagerError('Command output limit exceeded')
                     time.sleep(.25)
             except BaseException:
