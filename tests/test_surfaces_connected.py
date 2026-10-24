@@ -169,7 +169,7 @@ class SurfacesConnectedObserverTests(unittest.TestCase):
                 def holders(path):
                     if path!=connected.STATE_ROOT:return []
                     events.append('handles')
-                    return ['p123'] if live or lingering else []
+                    return ['p123'] if any(status!='Stopped' for status in live.values()) or lingering else []
                 def command(manager,record,args,allow_fail=False):
                     events.append(tuple(args))
                     if args==['list','--json']:
@@ -182,9 +182,11 @@ class SurfacesConnectedObserverTests(unittest.TestCase):
                     if lingering:
                         with self.assertRaisesRegex(ManagerError,'open handles'):connected.cleanup(m,x)
                         self.assertTrue(connected.STATE_ROOT.exists());self.assertTrue((m.runtime/x['job_id']).exists())
+                        self.assertNotIn(('delete','execution'),events)
                     else:
                         connected.cleanup(m,x)
                         self.assertTrue(x['vm_deleted']);self.assertTrue(x['runtime_deleted'])
+                        self.assertLess(events.index('handles'),events.index(('delete','execution')))
                 self.assertLess(events.index(('stop','--force','execution')),events.index('handles'))
                 self.assertEqual((manifest.read_bytes(),result.read_bytes(),proof.read_bytes()),original)
 

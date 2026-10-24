@@ -318,13 +318,14 @@ def cleanup(m,x):
   names={row.get('name'):row.get('status') for row in entries}
   if not set(names)<= {'clean-base','execution'}:raise ManagerError('Unexpected Surfaces VM inside owned state')
   for name in ('execution','clean-base'):
-   if name not in names:continue
-   if names[name]!='Stopped':lima(m,x,['stop','--force',name],allow_fail=True)
-   lima(m,x,['delete',name])
-  _,out=lima(m,x,['list','--json'],allow_fail=True)
-  if out.strip():raise ManagerError('Surfaces VM deletion did not settle')
+   if name in names and names[name]!='Stopped':lima(m,x,['stop','--force',name],allow_fail=True)
   holders=m.holders(STATE_ROOT);x['holders_after_stop']=holders
   if holders:raise ManagerError('Surfaces owned runtime still has open handles')
+  checked_state(m,x)
+  for name in ('execution','clean-base'):
+   if name in names:lima(m,x,['delete',name])
+  _,out=lima(m,x,['list','--json'],allow_fail=True)
+  if out.strip():raise ManagerError('Surfaces VM deletion did not settle')
   checked_state(m,x)
  x['deletion_intent']=True;atomic(m.path(x['job_id']),x)
  if STATE_ROOT.exists():
