@@ -268,7 +268,7 @@ def verify_external(m,x):
    raise ManagerError('External Surfaces evidence changed: '+str(p))
 
 
-def checked_state(m,x,empty=False):
+def checked_state(m,x,empty=False,require_no_holders=True):
  intent=x.get('surfaces_state_intent',{});saved=x.get('surfaces_state_identity')
  if intent.get('path')!=str(STATE_ROOT) or intent.get('expected_absent_at_admission') is not True or x.get('workload',{}).get('state_root')!=str(STATE_ROOT):
   raise ManagerError('Missing reviewed fresh-state cleanup intent')
@@ -276,7 +276,7 @@ def checked_state(m,x,empty=False):
  st=STATE_ROOT.stat()
  if not saved or (st.st_dev,st.st_ino)!=(saved['device'],saved['inode']):raise ManagerError('Surfaces state identity changed before deletion')
  if empty and ((st.st_mode & 0o777)!=0o700 or any(STATE_ROOT.iterdir())):raise ManagerError('Pre-pointer state must be an empty private directory')
- if m.holders(STATE_ROOT):raise ManagerError('Surfaces owned runtime still has open handles')
+ if require_no_holders and m.holders(STATE_ROOT):raise ManagerError('Surfaces owned runtime still has open handles')
  return st
 
 def lima(m,x,args,allow_fail=False):
@@ -307,7 +307,8 @@ def cleanup(m,x):
  if m.holders(home):raise ManagerError('Manager workload runtime still has open handles')
  pre_pointer=False
  if STATE_ROOT.exists() or STATE_ROOT.is_symlink():
-  checked_state(m,x)
+  # Running guests normally hold their disks open; validate identity before stop.
+  checked_state(m,x,require_no_holders=False)
   pointer=STATE_ROOT/'private/runtime-preparation/current.json'
   if not pointer.exists():
    checked_state(m,x,empty=True);pre_pointer=True

@@ -160,6 +160,43 @@ class SurfacesConnectedObserverTests(unittest.TestCase):
             connected.cleanup(m,x)
             self.assertTrue(x['vm_deleted']);self.assertTrue(x['runtime_deleted'])
 
+    def test_running_guest_is_stopped_before_rejecting_open_handles(self):
+        for lingering in (False,True):
+            with self.subTest(lingering=lingering),self.cleanup_fixture() as (m,x,manifest,result,proof):
+                pointer=connected.STATE_ROOT/'private/runtime-preparation/current.json'
+                pointer.parent.mkdir(parents=True);pointer.write_text('{}')
+                live={'execution':'Running'};events=[]
+                def holders(path):
+                    if path!=connected.STATE_ROOT:return []
+                    events.append('handles')
+                    return ['p123'] if live or lingering else []
+                def command(manager,record,args,allow_fail=False):
+                    events.append(tuple(args))
+                    if args==['list','--json']:
+                        return 0,'\n'.join(json.dumps({'name':name,'status':status}) for name,status in live.items())
+                    if args==['stop','--force','execution']:live['execution']='Stopped';return 0,''
+                    if args==['delete','execution']:live.pop('execution');return 0,''
+                    self.fail('Unexpected lifecycle command: '+str(args))
+                m.holders=Mock(side_effect=holders);original=(manifest.read_bytes(),result.read_bytes(),proof.read_bytes())
+                with patch.object(connected,'lima',side_effect=command):
+                    if lingering:
+                        with self.assertRaisesRegex(ManagerError,'open handles'):connected.cleanup(m,x)
+                        self.assertTrue(connected.STATE_ROOT.exists());self.assertTrue((m.runtime/x['job_id']).exists())
+                    else:
+                        connected.cleanup(m,x)
+                        self.assertTrue(x['vm_deleted']);self.assertTrue(x['runtime_deleted'])
+                self.assertLess(events.index(('stop','--force','execution')),events.index('handles'))
+                self.assertEqual((manifest.read_bytes(),result.read_bytes(),proof.read_bytes()),original)
+
+    def test_prepared_state_identity_mismatch_blocks_shutdown(self):
+        with self.cleanup_fixture() as (m,x,_,_,_):
+            pointer=connected.STATE_ROOT/'private/runtime-preparation/current.json'
+            pointer.parent.mkdir(parents=True);pointer.write_text('{}')
+            x['surfaces_state_identity']['inode']+=1
+            with patch.object(connected,'lima') as lima,self.assertRaisesRegex(ManagerError,'identity changed'):
+                connected.cleanup(m,x)
+            lima.assert_not_called();self.assertTrue(connected.STATE_ROOT.exists())
+
     def test_unsafe_pre_pointer_state_is_never_deleted(self):
         for defect in ('nonempty','replaced','intent','holders','symlink','mode'):
             with self.subTest(defect=defect),self.cleanup_fixture() as (m,x,_,_,_):
