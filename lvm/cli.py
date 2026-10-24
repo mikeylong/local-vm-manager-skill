@@ -26,8 +26,12 @@ def main():
     a=sub.add_parser('capture');a.add_argument('job_id');a.add_argument('--url',default='pilot')
     a=sub.add_parser('renew');a.add_argument('job_id');a.add_argument('--lease-seconds',type=int,default=120)
     sub.add_parser('inventory');sub.add_parser('sweep')
+    a=sub.add_parser('recover-export');a.add_argument('job_id');a.add_argument('--evidence-mib',required=True,type=int)
     args=p.parse_args();m=Manager().init()
     try:
+        if args.command=='recover-export':
+            x=m.recover_export(args.job_id,args.evidence_mib);emit(x)
+            return 0 if x.get('vm_deleted') and x.get('runtime_deleted') and x.get('evidence_verified') else 1
         if args.command=='surfaces-connected-observer':
             from . import surfaces_connected
             x=surfaces_connected.start(m,args.label,os.getpid());job=x['job_id'];emit({'job_id':job,'state':x['state']})

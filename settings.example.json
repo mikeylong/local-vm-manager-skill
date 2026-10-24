@@ -1,14 +1,23 @@
 {
   "disk_gib": 12,
   "memory_gib": 2,
-  "storage_budget_gib": 20,
+  "storage_budget_gib": 80,
   "free_floor_gib": 10,
   "evidence_mib": 250,
-  "max_concurrent": 1,
+  "max_concurrent": 3,
   "image_url": "https://cloud.debian.org/images/cloud/bookworm/20261021-2638/debian-12-genericcloud-arm64-20261021-2638.tar.xz",
   "image_archive_sha512": "fcee82a742170174086d5073e2f383d583d1716218751715116647fc25c431f86f3117947d518a6f19ca8979b3110e058e94d0ed0e3b2772dda00a3807e5b990",
   "image_sha256": "3e6b31757bccad34d73cdf3235238f138cc3a1c3830789d22808cdabe921b659",
   "lima_version": "2.2.1",
   "lima_archive_sha256": "9e9eacce88f37e185c346bad73aa6136f738d8cdf8c3bb23cd42b071824bc66e",
-  "limactl_sha256": "6d32fb0f880c0ea750434f2ac855a3f2129126752a301ce4d88adbd2fa599e1e"
+  "limactl_sha256": "6d32fb0f880c0ea750434f2ac855a3f2129126752a301ce4d88adbd2fa599e1e",
+  "resource_policy_version": 2,
+  "cpus": 2,
+  "max_guest_count": 4,
+  "max_vcpus": 12,
+  "max_memory_gib": 16,
+  "host_memory_floor_gib": 16,
+  "host_cpu_reserve": 4,
+  "runtime_overhead_gib": 4,
+  "staging_mib": 256
 }

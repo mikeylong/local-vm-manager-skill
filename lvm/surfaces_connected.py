@@ -11,7 +11,7 @@ MANAGER_EVIDENCE_LIMIT=2*1024**2
 TASK_EVIDENCE_LIMIT=64*1024**2
 RUNTIME_BACKING_LIMIT=20*1024**3
 HOST_FREE_FLOOR=10*1024**3
-MANAGER_SOURCE_NAMES=('lvm/surfaces_connected.py','lvm/manager.py','lvm/cli.py','lvm/mcp_server.py')
+MANAGER_SOURCE_NAMES=('lvm/surfaces_connected.py','lvm/manager.py','lvm/cli.py','lvm/mcp_server.py','lvm/resources.py')
 
 
 CONFIG_PATH=data_root()/'adapters/surfaces-connected.json'
@@ -166,7 +166,7 @@ def host_command(m,x,name,script,timeout):
     if time.monotonic()-started>timeout:raise ManagerError('Surfaces '+name+' deadline reached')
     note_state_identity(m,x)
     if evidence_size(m.evidence/x['job_id'])>MANAGER_EVIDENCE_LIMIT:raise ManagerError('Manager evidence allowance exceeded')
-    if STATE_ROOT.exists() and allocated(STATE_ROOT)>RUNTIME_BACKING_LIMIT*2+TASK_EVIDENCE_LIMIT:raise ManagerError('Surfaces runtime allocation exceeded bounded base plus execution envelope')
+    m.check_job_budget(x)
     if shutil.disk_usage(PROJECT).free<HOST_FREE_FLOOR:raise ManagerError('Host free-space floor breached')
     time.sleep(.25)
   finally:
@@ -234,10 +234,14 @@ def export(m,x):
  for name in ('prepare.log','fixtures.log'):
   p=root/name
   if p.exists():register(m,x,p,name)
- rows=external_manifest()
  manifest=root/'external-evidence-manifest.json'
- write_manager_json(manifest,{'schema_version':1,'kind':'surfaces-connected-observer-external-evidence/1','files':rows,'verified':True})
- register(m,x,manifest)
+ if manifest.exists():
+  # Recovery authenticates the original manifest; later task files cannot replace it.
+  verify_external(m,x)
+ else:
+  rows=external_manifest()
+  write_manager_json(manifest,{'schema_version':1,'kind':'surfaces-connected-observer-external-evidence/1','files':rows,'verified':True})
+  register(m,x,manifest)
  result=root/'result.json'
  if not result.exists():
   terminal=x.get('test_result')
@@ -249,11 +253,31 @@ def export(m,x):
  x['external_evidence_verified']=True;atomic(m.path(x['job_id']),x)
 
 def verify_external(m,x):
- root=m.evidence/x['job_id'];manifest=read(root/'external-evidence-manifest.json')
- for row in manifest.get('files',[]):
+ root=m.evidence/x['job_id'];path=root/'external-evidence-manifest.json'
+ pin=x.get('exports',{}).get(path.name)
+ if not pin or path.is_symlink() or not path.is_file() or path.stat().st_size!=pin['bytes'] or sha(path)!=pin['sha256']:
+  raise ManagerError('Original external evidence manifest cannot be authenticated')
+ manifest=read(path)
+ if manifest.get('kind')!='surfaces-connected-observer-external-evidence/1' or manifest.get('verified') is not True or not isinstance(manifest.get('files'),list):
+  raise ManagerError('Invalid original external evidence manifest')
+ rows=manifest['files']
+ if len(rows)>30000 or sum(row['bytes'] for row in rows)>TASK_EVIDENCE_LIMIT:raise ManagerError('External evidence manifest exceeds bound')
+ for row in rows:
   p=pathlib.Path(row['path'])
-  if not p.is_file() or p.is_symlink() or p.stat().st_size!=row['bytes'] or sha(p)!=row['sha256']:
+  if not p.is_absolute() or not p.is_relative_to(TASK_ROOT) or p.resolve()!=p or not p.is_file() or p.is_symlink() or p.stat().st_size!=row['bytes'] or sha(p)!=row['sha256']:
    raise ManagerError('External Surfaces evidence changed: '+str(p))
+
+
+def checked_state(m,x,empty=False,require_no_holders=True):
+ intent=x.get('surfaces_state_intent',{});saved=x.get('surfaces_state_identity')
+ if intent.get('path')!=str(STATE_ROOT) or intent.get('expected_absent_at_admission') is not True or x.get('workload',{}).get('state_root')!=str(STATE_ROOT):
+  raise ManagerError('Missing reviewed fresh-state cleanup intent')
+ if STATE_ROOT.is_symlink() or STATE_ROOT.resolve()!=STATE_ROOT or not STATE_ROOT.is_dir():raise ManagerError('Surfaces state identity is unsafe')
+ st=STATE_ROOT.stat()
+ if not saved or (st.st_dev,st.st_ino)!=(saved['device'],saved['inode']):raise ManagerError('Surfaces state identity changed before deletion')
+ if empty and ((st.st_mode & 0o777)!=0o700 or any(STATE_ROOT.iterdir())):raise ManagerError('Pre-pointer state must be an empty private directory')
+ if require_no_holders and m.holders(STATE_ROOT):raise ManagerError('Surfaces owned runtime still has open handles')
+ return st
 
 def lima(m,x,args,allow_fail=False):
  stage_file=STATE_ROOT/'private/runtime-preparation/current.json'
@@ -276,24 +300,38 @@ def lima(m,x,args,allow_fail=False):
 def cleanup(m,x):
  verify_binding(x)
  verify_external(m,x)
- note_state_identity(m,x)
- if STATE_ROOT.exists():
+ if not (m.runtime/x['job_id']).exists() and not STATE_ROOT.exists() and x.get('deletion_intent'):
+  x.update(vm_deleted=True,runtime_deleted=True,remaining_runtime_bytes=0);return
+ # Verify both namespaces before deleting either; never adopt an unrecorded root.
+ home=m.home(x)
+ if m.holders(home):raise ManagerError('Manager workload runtime still has open handles')
+ pre_pointer=False
+ if STATE_ROOT.exists() or STATE_ROOT.is_symlink():
+  # Running guests normally hold their disks open; validate identity before stop.
+  checked_state(m,x,require_no_holders=False)
+  pointer=STATE_ROOT/'private/runtime-preparation/current.json'
+  if not pointer.exists():
+   checked_state(m,x,empty=True);pre_pointer=True
+ if (STATE_ROOT.exists() or STATE_ROOT.is_symlink()) and not pre_pointer:
   _,out=lima(m,x,['list','--json'],allow_fail=True)
   entries=[json.loads(line) for line in out.splitlines() if line.strip()]
   names={row.get('name'):row.get('status') for row in entries}
   if not set(names)<= {'clean-base','execution'}:raise ManagerError('Unexpected Surfaces VM inside owned state')
   for name in ('execution','clean-base'):
-   if name not in names:continue
-   if names[name]!='Stopped':lima(m,x,['stop','--force',name],allow_fail=True)
-   lima(m,x,['delete',name])
-  _,out=lima(m,x,['list','--json'],allow_fail=True)
-  if out.strip():raise ManagerError('Surfaces VM deletion did not settle')
+   if name in names and names[name]!='Stopped':lima(m,x,['stop','--force',name],allow_fail=True)
   holders=m.holders(STATE_ROOT);x['holders_after_stop']=holders
   if holders:raise ManagerError('Surfaces owned runtime still has open handles')
-  saved=x.get('surfaces_state_identity');s=STATE_ROOT.stat()
-  if not saved or (s.st_dev,s.st_ino)!=(saved['device'],saved['inode']):raise ManagerError('Surfaces state identity changed before deletion')
+  checked_state(m,x)
+  for name in ('execution','clean-base'):
+   if name in names:lima(m,x,['delete',name])
+  _,out=lima(m,x,['list','--json'],allow_fail=True)
+  if out.strip():raise ManagerError('Surfaces VM deletion did not settle')
+  checked_state(m,x)
  x['deletion_intent']=True;atomic(m.path(x['job_id']),x)
- if STATE_ROOT.exists():shutil.rmtree(STATE_ROOT)
+ if STATE_ROOT.exists():
+  checked_state(m,x,empty=pre_pointer)
+  if pre_pointer:STATE_ROOT.rmdir()
+  else:shutil.rmtree(STATE_ROOT)
  cleanup_log=m.evidence/x['job_id']/'cleanup.log'
  if cleanup_log.exists():register(m,x,cleanup_log,'cleanup.log')
  home=m.home(x);manager_holders=m.holders(home);x['manager_holders_before_delete']=manager_holders

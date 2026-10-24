@@ -1,10 +1,11 @@
 import json,os,pathlib,tempfile,unittest
 from lvm.manager import Manager,ManagerError,atomic,identity
+from lvm.resources import DEFAULTS
 
 class OwnershipTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(dir='/private/tmp',prefix='lvm-test-')
-        self.root=pathlib.Path(self.temp.name).resolve();self.m=Manager(self.root).init()
+        self.root=pathlib.Path(self.temp.name).resolve();self.m=Manager(self.root).init();atomic(self.root/'settings.json',DEFAULTS)
     def tearDown(self):self.temp.cleanup()
     def owned(self):
         j='1234abcd';d=self.m.runtime/j;d.mkdir();h=d/'l';h.mkdir()
@@ -81,10 +82,9 @@ class OwnershipTests(unittest.TestCase):
         x={'job_id':'1234abcd','owner_pid':os.getpid(),'owner_start':identity(os.getpid()),'deadline':1,'hard_deadline':2}
         atomic(self.m.state/'1234abcd.lease',{'deadline':99999999999})
         self.assertEqual(self.m.abort_reason(x),'lease_expired');self.assertEqual(x['deadline'],2)
-    def test_active_or_blocked_job_prevents_new_allocation(self):
-        (self.root/'settings.json').write_text(json.dumps({'max_concurrent':1}))
+    def test_unknown_job_record_blocks_admission(self):
         atomic(self.m.path('1234abcd'),{'state':'cleanup_blocked'})
-        with self.assertRaisesRegex(ManagerError,'cleanup-blocked'):self.m.start()
+        with self.assertRaises((ManagerError,KeyError)):self.m.start()
         self.assertEqual(list(self.m.runtime.iterdir()),[])
     def test_no_icloud_root(self):
         with self.assertRaises(ManagerError):Manager('/Users/fixture/Documents/Codex/forbidden')

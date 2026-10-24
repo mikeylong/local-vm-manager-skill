@@ -9,6 +9,8 @@ async def main():
             result=await s.call_tool('vm_inventory',{})
             data=result.structured_content or json.loads(result.content[0].text)
             assert not result.is_error and 'jobs' in data
+            assert data.get('implementation')=='resource-reservations-v2'
+            assert data['capacity']['policy_version']==2 and data['code_root']==str(ROOT)
             done=next((x for x in data['jobs'] if x['state']=='complete'),None)
             if done:
                 result=await s.call_tool('vm_status',{'job_id':done['job_id']})
@@ -16,6 +18,7 @@ async def main():
                 assert not result.is_error and receipt['vm_deleted']
             bad=await s.call_tool('vm_status',{'job_id':'minerva'});assert bad.is_error
             x={'transport':'stdio','sdk':'2.3.0','tool_names':[x.name for x in t.tools],
+               'implementation':data['implementation'],'code_root':data['code_root'],'data_root':data['data_root'],'capacity':data['capacity'],
                'inventory_read':True,'completed_receipt_read':bool(done),'external_vm_name_rejected':True}
             bad=await s.call_tool('vm_run_playwright',{'source_dir':str(ROOT),'tests':['ios/Native.spec.ts'],'expected_tests':1});assert bad.is_error
             x['native_spec_rejected']=True

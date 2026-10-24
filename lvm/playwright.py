@@ -1,6 +1,6 @@
 """Bounded web-source snapshots and verified Playwright evidence export."""
 import io,json,os,pathlib,shutil,tarfile,tempfile
-from .manager import ManagerError,atomic,read,sha
+from .manager import ManagerError,atomic,read,sha,lock
 ROOTS={'src','api','scripts','tests','public','brand','website-assets'}
 ROOT_FILES={'package.json','package-lock.json','playwright.config.ts','index.html','robots.txt'}
 EXCLUDED={'node_modules','.git','ios','macos','native','data','.env','output','dist'}
@@ -83,9 +83,10 @@ def snapshot(m,source_dir,tests,expected_tests,suite_profile=None):
     except BaseException:tmp.unlink(missing_ok=True);raise
 
 def start(m,source_dir,tests,expected_tests,label='playwright',owner_pid=None):
-    payload,spec=snapshot(m,source_dir,tests,expected_tests)
-    try:return m.start(label,owner_pid=owner_pid,workload=(payload,spec))
-    finally:payload.unlink(missing_ok=True)
+    with lock(m.state/'snapshot.lock'):
+        payload,spec=snapshot(m,source_dir,tests,expected_tests)
+        try:return m.start(label,owner_pid=owner_pid,workload=(payload,spec))
+        finally:payload.unlink(missing_ok=True)
 
 def run(m,x):
     payload=m.runtime/x['job_id']/'input.tar';remote='/tmp/lvm-playwright-input.tar'
@@ -116,6 +117,15 @@ def extract(bundle,target,limit):
             os.replace(part,dest)
     return {**manifest,'manifest.json':{'bytes':(target/'manifest.json').stat().st_size,'sha256':sha(target/'manifest.json')}}
 
+def recovery_seal_command(limit,helper_sha):
+    # Execute only the original helper's seal function under its newly reserved cap.
+    # The on-disk helper and all original evidence files remain unchanged.
+    code=("import hashlib,importlib.util,json,pathlib; p=pathlib.Path('/opt/lvm-playwright.py'); "
+          "assert hashlib.sha256(p.read_bytes()).hexdigest()=="+repr(helper_sha)+"; "
+          "s=importlib.util.spec_from_file_location('lvm_recovery_sealer',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
+          "m.LIMIT="+str(limit)+"; m.ALLOWED.add('test-results.json'); print(json.dumps(m.seal()))")
+    return ['shell','guest','--','python3','-c',code]
+
 def export(m,x):
     root=m.evidence/x['job_id'];meta=root/'playwright-export.meta-part'
     if not x.get('workload_started'):return
@@ -138,13 +148,16 @@ if any(p.exists() for p in matched):raise RuntimeError('Workload runner did not 
 """
     m.command(x,['shell','guest','--','python3','-c',stop],watch=False,timeout=20)
     # Fixed script in this owned guest; sealing is bounded and exports no workspace/cache.
-    m.command(x,['shell','guest','--','python3','/opt/lvm-playwright.py','seal'],watch=False,output=meta,timeout=60)
+    seal_command=['shell','guest','--','python3','/opt/lvm-playwright.py','seal']
+    if x.get('approved_export_limit_bytes'):
+        seal_command=recovery_seal_command(m.evidence_limit(x),sha(m.code_root/'lvm/guest_playwright.py'))
+    m.command(x,seal_command,watch=False,output=meta,timeout=60)
     receipt=read(meta);meta.unlink()
-    if receipt['path']!='/tmp/lvm-playwright/evidence.tar.gz' or receipt['bytes']>m.settings()['evidence_mib']*1024**2:raise ManagerError('Invalid evidence bundle receipt')
+    if receipt['path']!='/tmp/lvm-playwright/evidence.tar.gz' or receipt['bytes']>m.evidence_limit(x):raise ManagerError('Invalid evidence bundle receipt')
     bundle=root/'playwright-evidence.tar.gz.part'
     m.command(x,['shell','guest','--','cat',receipt['path']],watch=False,output=bundle,timeout=90)
     if bundle.stat().st_size!=receipt['bytes'] or sha(bundle)!=receipt['sha256']:raise ManagerError('Evidence bundle readback mismatch')
-    files=extract(bundle,root/'playwright',m.settings()['evidence_mib']*1024**2)
+    files=extract(bundle,root/'playwright',m.evidence_limit(x))
     x['exports'].update({'playwright/'+k:v for k,v in files.items()})
     x['bundle_sha256']=receipt['sha256'];bundle.unlink()
     result=read(root/'playwright/result.json');x['test_result']=result

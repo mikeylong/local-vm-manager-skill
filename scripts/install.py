@@ -138,6 +138,9 @@ def install(root, codex_home, agents_dir, *, load=True, dry_run=False, migrate_f
             manager=Manager(p['storage']);manager.owner=json.loads((manager.state/'owner.json').read_text());assert_idle(manager)
         return summary
     manager = Manager(p['storage']).init()
+    if (manager.root/'settings.json').exists():
+        from lvm.resources import configure
+        summary['resources']=configure(manager)
     with lock(manager.state / 'admission.lock'):
         if p['legacy'] is not None:
             until=time.monotonic()+wait_idle_seconds
