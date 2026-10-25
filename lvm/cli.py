@@ -3,11 +3,13 @@ from .manager import Manager,ManagerError,TERMINAL
 
 def emit(x): print(json.dumps(x),flush=True)
 def wait(m,job,predicate,seconds=900):
-    end=time.monotonic()+seconds; last=None; renewed=0
+    end=time.monotonic()+seconds; last=None; renewed=0; warning=None
     while time.monotonic()<end:
         x=m.status(job)
         if x['state'] not in TERMINAL and time.monotonic()-renewed>20:m.renew(job);renewed=time.monotonic()
         if x['state']!=last:emit({'job_id':job,'state':x['state']});last=x['state']
+        if x.get('evidence_warning') and x['evidence_warning']!=warning:
+            warning=x['evidence_warning'];emit({'job_id':job,'warning':warning})
         if predicate(x):return x
         if x['state'] in TERMINAL:raise ManagerError(json.dumps(x))
         time.sleep(1)
@@ -26,7 +28,7 @@ def main():
     a=sub.add_parser('capture');a.add_argument('job_id');a.add_argument('--url',default='pilot')
     a=sub.add_parser('renew');a.add_argument('job_id');a.add_argument('--lease-seconds',type=int,default=120)
     sub.add_parser('inventory');sub.add_parser('sweep')
-    a=sub.add_parser('recover-export');a.add_argument('job_id');a.add_argument('--evidence-mib',required=True,type=int)
+    a=sub.add_parser('recover-export');a.add_argument('job_id');a.add_argument('--evidence-mib',type=int)
     args=p.parse_args();m=Manager().init()
     try:
         if args.command=='recover-export':

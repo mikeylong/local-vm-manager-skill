@@ -107,6 +107,7 @@ class Manager:
                 'capacity':capacity,'scope':'only this manager; external VM stores are never queried',
                 'code_root':str(self.code_root),'data_root':str(self.root),
                 'allocated_bytes':allocated(self.root), 'settings':self.settings(),
+                'evidence_policy':{'implementation':'soft-evidence-v1','soft_limit_bytes':self.settings()['evidence_mib']*1024**2,'capacity_gated_growth':True},
                 'jobs':[self.status(p.stem) for p in sorted(self.jobs.glob('*.json'))]}
     def start(self,label='browser',lease_seconds=120,owner_pid=None,workload=None):
         if not isinstance(label,str) or not 1<=len(label)<=120:raise ManagerError('Label must be 1–120 characters')
@@ -162,35 +163,48 @@ class Manager:
                 raise
             return self.status(job)
     def evidence_limit(self,x):
-        return x.get('approved_export_limit_bytes',self.settings()['evidence_mib']*1024**2)
-    def recover_export(self,job,limit_mib):
-        """Explicit, bounded export-only recovery; never starts the test runner."""
-        if type(limit_mib) is not int or not 1<=limit_mib<=512:raise ManagerError('Recovery export limit must be 1..512 MiB')
-        self.path(job) # validate the ID before constructing or opening any lock path
+        return max(x.get('approved_export_limit_bytes',0),self.settings()['evidence_mib']*1024**2)
+    def reserve_evidence(self,x,needed_bytes,measured_bytes=None):
+        """Reserve export/archive/extraction headroom before copying host evidence."""
+        if type(needed_bytes) is not int or needed_bytes<0:raise ManagerError('Invalid measured evidence size')
+        with lock(self.state/'admission.lock'):
+            current=self.status(x['job_id']);self.home(current)
+            evidence=self.evidence/x['job_id']
+            if evidence.is_symlink() or evidence.resolve()!=evidence or not evidence.is_dir():raise ManagerError('Recovery evidence directory is unsafe')
+            from .resources import snapshot,job_claim
+            policy=self.settings();capacity=snapshot(self,policy)
+            if capacity['unknown_state']:raise ManagerError('Unaccounted runtime state prevents evidence reservation')
+            reservation=job_claim(policy,current).copy()
+            if reservation['profile']!='linux-browser':raise ManagerError('This profile has a separately bound evidence policy')
+            previous_limit=self.evidence_limit(current);new_limit=max(previous_limit,needed_bytes)
+            old_reserved=reservation['evidence_bytes'];new_reserved=max(old_reserved,3*new_limit+16*1024**2);delta=new_reserved-old_reserved
+            if capacity['committed_storage_bytes']+delta>policy['storage_budget_gib']*GIB:
+                raise ManagerError('Evidence export needs more shared storage capacity; guest and evidence retained')
+            if capacity['remaining_reserved_bytes']+delta+policy['staging_mib']*1024**2+policy['free_floor_gib']*GIB>capacity['host']['disk_free_bytes']:
+                raise ManagerError('Evidence export would breach host free-space floor; guest and evidence retained')
+            if delta or new_limit>previous_limit:
+                current.setdefault('export_recovery_history',[]).append({'at':time.time(),'previous_limit_bytes':previous_limit,'approved_limit_bytes':new_limit,'previous_reserved_bytes':old_reserved,'reserved_bytes':new_reserved})
+            reservation['evidence_bytes']=new_reserved;current['reservation']=reservation;current['approved_export_limit_bytes']=new_limit
+            soft=policy['evidence_mib']*1024**2
+            if measured_bytes is not None and measured_bytes>=soft:
+                current['evidence_warning']={'code':'soft_evidence_allowance_reached','soft_limit_bytes':soft,'measured_bytes':measured_bytes,'message':'Evidence reached the soft allowance; export continues within reserved shared capacity.'}
+            atomic(self.path(x['job_id']),current);x.update(current)
+        return new_limit
+    def recover_export(self,job,limit_mib=None):
+        """Export-only recovery; the default measures evidence and reserves capacity."""
+        if limit_mib is not None and (type(limit_mib) is not int or limit_mib<1):raise ManagerError('Recovery allowance must be a positive MiB value')
+        self.path(job)
         with lock(self.state/(job+'.supervisor.lock'),blocking=False):
-            with lock(self.state/'admission.lock'):
-                x=self.status(job)
-                if x['state']!='cleanup_blocked' or x.get('profile')!='linux-playwright' or not x.get('workload_started'):
-                    raise ManagerError('Export recovery requires a blocked, already-started Playwright job')
-                pid=x.get('supervisor_pid')
-                if pid and identity(pid)==x.get('supervisor_start'):raise ManagerError('The existing job supervisor is still running')
-                self.home(x)
-                evidence=self.evidence/job
-                if evidence.is_symlink() or evidence.resolve()!=evidence or not evidence.is_dir():raise ManagerError('Recovery evidence directory is unsafe')
-                previous_limit=self.evidence_limit(x);new_limit=limit_mib*1024**2
-                if new_limit<=previous_limit:raise ManagerError('Recovery limit must increase this job allowance')
-                from .resources import snapshot,job_claim
-                policy=self.settings();capacity=snapshot(self,policy)
-                if capacity['unknown_state']:raise ManagerError('Unaccounted runtime state prevents recovery budget change')
-                reservation=job_claim(policy,x).copy();old_reserved=reservation['evidence_bytes']
-                new_reserved=max(old_reserved,3*new_limit+16*1024**2);delta=new_reserved-old_reserved
-                if capacity['committed_storage_bytes']+delta>policy['storage_budget_gib']*GIB:
-                    raise ManagerError('Recovery evidence reservation exceeds shared storage budget')
-                if capacity['physical_reservation_headroom_bytes']+delta+policy['staging_mib']*1024**2+policy['free_floor_gib']*GIB>capacity['host']['disk_free_bytes']:
-                    raise ManagerError('Recovery evidence reservation breaches host free-space floor')
-                x.setdefault('export_recovery_history',[]).append({'at':time.time(),'previous_limit_bytes':previous_limit,'approved_limit_bytes':new_limit,'previous_reserved_bytes':old_reserved,'reserved_bytes':new_reserved})
-                reservation['evidence_bytes']=new_reserved;x['reservation']=reservation;x['approved_export_limit_bytes']=new_limit
-                atomic(self.path(job),x)
+            x=self.status(job)
+            if x['state']!='cleanup_blocked' or x.get('profile')!='linux-playwright' or not x.get('workload_started'):
+                raise ManagerError('Export recovery requires a blocked, already-started Playwright job')
+            pid=x.get('supervisor_pid')
+            if pid and identity(pid)==x.get('supervisor_start'):raise ManagerError('The existing job supervisor is still running')
+            self.home(x)
+            if limit_mib is not None:
+                new_limit=limit_mib*1024**2
+                if new_limit<=self.evidence_limit(x):raise ManagerError('Recovery hint must increase this job allowance')
+                self.reserve_evidence(x,new_limit)
             self._supervise(job)
             return self.status(job)
     def check_job_budget(self,x):
@@ -300,6 +314,7 @@ chmod 755 /opt/lvm-capture.py
 '''.replace('SCRIPT',script)
         if x.get('workload'):
             provision=provision.replace('chromium fonts-liberation ca-certificates python3','fonts-liberation ca-certificates python3 xz-utils')
+            x['guest_helper_sha256']=sha(self.code_root/'lvm/guest_playwright.py')
             helper=base64.b64encode((self.code_root/'lvm/guest_playwright.py').read_bytes()).decode()
             provision += "printf '%s' "+helper+" | base64 -d > /opt/lvm-playwright.py\nchmod 755 /opt/lvm-playwright.py\n"
             if x['workload'].get('runner')=='node-suites':
@@ -320,12 +335,13 @@ chmod 755 /opt/lvm-capture.py
             target=self.evidence/x['job_id']/key
             remote='/tmp/lvm-evidence/'+request+'/'+name
             metadata=target.with_suffix(target.suffix+'.meta-part')
-            code="import pathlib,hashlib,json; p=pathlib.Path("+repr(remote)+"); assert p.is_file() and not p.is_symlink() and p.stat().st_size<=262144000; f=p.open('rb'); print(json.dumps({'size':p.stat().st_size,'sha256':hashlib.file_digest(f,'sha256').hexdigest()}))"
+            code="import pathlib,hashlib,json; p=pathlib.Path("+repr(remote)+"); assert p.is_file() and not p.is_symlink(); f=p.open('rb'); print(json.dumps({'size':p.stat().st_size,'sha256':hashlib.file_digest(f,'sha256').hexdigest()}))"
             rc=self.command(x,['shell','guest','--','python3','-c',code],watch=False,timeout=25,output=metadata,allow_fail=True)
             if rc:
                 metadata.unlink(missing_ok=True);continue
             m=read(metadata);metadata.unlink()
-            if m['size']+sum(v['bytes'] for k,v in x['exports'].items() if k!=key)>self.settings()['evidence_mib']*1024**2:raise ManagerError('Evidence allowance exceeded; no files silently discarded')
+            total=m['size']+sum(v['bytes'] for k,v in x['exports'].items() if k!=key)
+            self.reserve_evidence(x,total,measured_bytes=total)
             part=target.with_suffix(target.suffix+'.part')
             self.command(x,['shell','guest','--','cat',remote],watch=False,timeout=30,output=part)
             if part.stat().st_size!=m['size'] or sha(part)!=m['sha256']:raise ManagerError('Evidence readback mismatch')

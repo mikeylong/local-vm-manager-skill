@@ -176,16 +176,18 @@ For explicit concurrent lifecycle acceptance (creates new owned Linux guests):
 
 The harness overlaps two independently owned browser workloads, intentionally holds an open handle to block one job’s cleanup, verifies the other still executes, admits new jobs with safe capacity remaining, and exercises agent/supervisor crash cleanup. `--reconcile-job JOB_ID` additionally permits cleanup-only recovery of that exact pre-existing blocked Surfaces job after fresh ownership/evidence checks; never pass an unrelated job. It does not rerun either Surfaces fixture. Reports stay under ignored `verification/`, with all job evidence retained in the configured data root.
 
-## Recover an oversized failed export
+## Evidence allowance and recovery
 
-A completed test run can produce more diagnostics than the default 250 MiB allowance. Keep the guest and its reservation until all required evidence is recovered. Do not rerun the tests, remove traces, or clear its reservation to make export fit.
+Ordinary browser jobs reserve a 1 GiB soft evidence allowance. The host measures the allowlisted files and reserves archive, transfer, and extraction headroom before copying them. At 1 GiB, the receipt includes an `evidence_warning`; the CLI displays it and MCP clients can read it through `vm_status`. Larger exports continue automatically when the shared 80 GiB storage budget and host free-space floor allow the additional reservation.
 
-After measuring the evidence and authorizing a cap for that one job, use the canonical CLI:
+The soft allowance does not remove guest disk, CPU, memory, runtime, or shared storage limits. Evidence remains on the host after the guest is deleted and still counts toward the shared budget. The separately reviewed Surfaces connected-observer contract retains its fixed external evidence allowance.
+
+If shared capacity cannot cover an export, the job stays `cleanup_blocked` with its guest, evidence, and reservation intact. Let unrelated jobs finish or resolve storage capacity without deleting required evidence. Retry the existing job through the canonical CLI:
 
 ```sh
-bin/lvm recover-export JOB_ID --evidence-mib 352
+bin/lvm recover-export JOB_ID
 ```
 
-The command accepts only an already-started Playwright job in `cleanup_blocked` with no live supervisor. The cap must increase and may not exceed 512 MiB. Job ID, ownership, evidence-directory identity, and fresh shared capacity are checked before mutation. The evidence reservation grows atomically to at least three times the new allowance plus 16 MiB; an existing larger reservation is never reduced. Insufficient capacity refuses the operation without changing the job. The global default and other job allowances stay unchanged.
+Recovery requires a blocked, already-started Playwright job with no live supervisor. It measures and reserves the required evidence automatically, authenticates the guest helper, exports every original diagnostic path, and verifies hashes before deleting only that job's VM/runtime. It never reruns tests. The original test failure remains a failure when cleanup succeeds.
 
-Recovery verifies the original guest helper hash and invokes only its sealing function under the approved cap. It preserves every original evidence path and byte, including repeated trace copies, then performs the normal bundle/file verification and owned-runtime cleanup. A failed test result remains failed even when cleanup succeeds. Inspect the terminal receipt's result and all evidence/deletion flags separately. This command creates no VM and does not rerun tests. Run it outside the macOS shell sandbox with approval for that invocation.
+`--evidence-mib N` is an optional minimum reservation hint above the current allowance, not a hard export cap. No separate per-job upper cap bypasses the shared storage budget or free-space floor. Existing guests running the previous pinned helper can be recovered without replacing their helper or changing their evidence. Run VM CLI commands outside the macOS shell sandbox with approval for that invocation.
