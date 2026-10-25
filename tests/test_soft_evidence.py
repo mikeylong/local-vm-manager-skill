@@ -34,9 +34,27 @@ class SoftEvidenceTests(unittest.TestCase):
         reserved=self.x['reservation']['evidence_bytes']
         self.m.reserve_evidence(self.x,1)
         self.assertEqual(self.x['reservation']['evidence_bytes'],reserved)
+    def test_used_reservation_is_not_charged_against_remaining_free_space(self):
+        capacity={'unknown_state':[],'committed_storage_bytes':25*GIB,
+                  'physical_reservation_headroom_bytes':19*GIB+16*1024**2,
+                  'remaining_reserved_bytes':11*GIB+16*1024**2,
+                  'host':dict(HOST,disk_free_bytes=27*GIB)}
+        original=self.x['reservation'].copy()
+        with patch('lvm.resources.snapshot',return_value=capacity):
+            self.m.reserve_evidence(self.x,1024)
+        self.assertEqual(self.x['reservation'],original)
+    def test_growth_still_reserves_additional_space_after_used_capacity(self):
+        capacity={'unknown_state':[],'committed_storage_bytes':25*GIB,
+                  'physical_reservation_headroom_bytes':19*GIB+16*1024**2,
+                  'remaining_reserved_bytes':11*GIB+16*1024**2,
+                  'host':dict(HOST,disk_free_bytes=23*GIB)}
+        original=self.m.path(self.x['job_id']).read_bytes()
+        with patch('lvm.resources.snapshot',return_value=capacity),self.assertRaisesRegex(ManagerError,'free-space floor'):
+            self.m.reserve_evidence(self.x,2*GIB)
+        self.assertEqual(self.m.path(self.x['job_id']).read_bytes(),original)
     def test_capacity_failure_keeps_receipt_and_guest(self):
         before=self.m.path(self.x['job_id']).read_bytes();home=self.m.home(self.x)
-        for capacity,message in [({'unknown_state':[],'committed_storage_bytes':80*GIB,'physical_reservation_headroom_bytes':0,'host':HOST},'shared storage'),({'unknown_state':[],'committed_storage_bytes':0,'physical_reservation_headroom_bytes':0,'host':dict(HOST,disk_free_bytes=1)},'free-space floor')]:
+        for capacity,message in [({'unknown_state':[],'committed_storage_bytes':80*GIB,'remaining_reserved_bytes':0,'host':HOST},'shared storage'),({'unknown_state':[],'committed_storage_bytes':0,'remaining_reserved_bytes':0,'host':dict(HOST,disk_free_bytes=1)},'free-space floor')]:
             with patch('lvm.resources.snapshot',return_value=capacity),self.assertRaisesRegex(ManagerError,message):
                 self.m.reserve_evidence(self.x,2*GIB,measured_bytes=2*GIB)
             self.assertEqual(self.m.path(self.x['job_id']).read_bytes(),before);self.assertTrue(home.exists())
@@ -90,10 +108,40 @@ class SoftEvidenceTests(unittest.TestCase):
         out=self.root/'probe';out.mkdir();(out/'result.json').write_bytes(b'{}')
         (out/'node_modules').mkdir();(out/'node_modules'/'secret').write_bytes(b'private')
         helper=self.root/'helper.py';helper.write_bytes(b'fixture')
-        code=evidence_probe_command()[-1].replace('/tmp/lvm-playwright-evidence',str(out)).replace('/opt/lvm-playwright.py',str(helper))
+        code=evidence_probe_command(sha(helper))[-1].replace('/tmp/lvm-playwright-evidence',str(out)).replace('/opt/lvm-playwright.py',str(helper))
         output=io.StringIO()
         with contextlib.redirect_stdout(output):exec(code,{})
         measured=json.loads(output.getvalue());self.assertEqual(measured['files'],1);self.assertEqual(measured['bytes'],2)
+
+    def test_interruption_result_is_included_before_sizing_large_evidence(self):
+        from lvm.playwright import extract
+        out=self.root/'interrupted';out.mkdir();body=b'x'*(2*1024**2)
+        (out/'run.log').write_bytes(body)
+        helper=self.root/'helper.py';helper.write_bytes(b'fixture')
+        code=evidence_probe_command(sha(helper))[-1].replace('/tmp/lvm-playwright-evidence',str(out)).replace('/opt/lvm-playwright.py',str(helper))
+        output=io.StringIO()
+        with contextlib.redirect_stdout(output):exec(code,{})
+        measured=json.loads(output.getvalue());original_result=(out/'result.json').read_bytes()
+        self.assertEqual(measured['files'],2)
+        self.assertEqual(measured['bytes'],len(body)+len(original_result))
+        guest_path=pathlib.Path(__file__).resolve().parents[1]/'lvm/guest_playwright.py'
+        spec=importlib.util.spec_from_file_location('interrupted_guest',guest_path)
+        guest=importlib.util.module_from_spec(spec);spec.loader.exec_module(guest)
+        limit=measured['bytes']+measured['manifest_bytes']
+        guest.OUT=out;guest.WORK=self.root/'guest-work';guest.LIMIT=limit
+        receipt=guest.seal();destination=self.root/'recovered'
+        extract(pathlib.Path(receipt['path']),destination,limit)
+        self.assertEqual((destination/'result.json').read_bytes(),original_result)
+        self.assertEqual((destination/'run.log').read_bytes(),body)
+        self.assertFalse(json.loads(original_result)['passed'])
+        with contextlib.redirect_stdout(io.StringIO()):exec(code,{})
+        self.assertEqual((out/'result.json').read_bytes(),original_result)
+
+    def test_unrecognized_helper_cannot_create_interruption_result(self):
+        out=self.root/'untrusted-probe';out.mkdir();helper=self.root/'helper.py';helper.write_bytes(b'changed')
+        code=evidence_probe_command('a'*64)[-1].replace('/tmp/lvm-playwright-evidence',str(out)).replace('/opt/lvm-playwright.py',str(helper))
+        with self.assertRaises(AssertionError):exec(code,{})
+        self.assertFalse((out/'result.json').exists())
 
     def test_capacity_failure_prevents_sealing_and_host_copy(self):
         self.blocked();before=self.m.path(self.x['job_id']).read_bytes();outputs=[]
@@ -104,7 +152,7 @@ class SoftEvidenceTests(unittest.TestCase):
             self.assertEqual(output.name,'playwright-measure.meta-part')
             output.write_text(json.dumps({'bytes':2*GIB,'manifest_bytes':500,'files':1,'helper_sha256':'a'*64}))
             return 0
-        capacity={'unknown_state':[],'committed_storage_bytes':80*GIB,'physical_reservation_headroom_bytes':0,'host':HOST}
+        capacity={'unknown_state':[],'committed_storage_bytes':80*GIB,'remaining_reserved_bytes':0,'host':HOST}
         with patch.object(self.m,'command',side_effect=command),patch('lvm.resources.snapshot',return_value=capacity),self.assertRaisesRegex(ManagerError,'shared storage'):
             export(self.m,self.x)
         self.assertEqual(outputs,['playwright-measure.meta-part'])

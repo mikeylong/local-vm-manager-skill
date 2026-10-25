@@ -119,9 +119,15 @@ def extract(bundle,target,limit):
 
 LEGACY_GUEST_HELPER_SHA256='c8738e9deaffd7d5e7882f43113fa71278c7bb1f1af790c27d420f90fcb35f87'
 
-def evidence_probe_command():
-    # Read only the same evidence allowlist as extraction; never read workspace/cache.
-    lines=["import pathlib,json,hashlib", "root=pathlib.Path('/tmp/lvm-playwright-evidence')",
+def evidence_probe_command(helper_sha):
+    # Authenticate the helper and materialize a missing interruption result before sizing.
+    lines=["import pathlib,json,hashlib,time", "root=pathlib.Path('/tmp/lvm-playwright-evidence')",
+           "helper=pathlib.Path('/opt/lvm-playwright.py')", "assert hashlib.sha256(helper.read_bytes()).hexdigest()=="+repr(helper_sha),
+           "if root.is_symlink():raise RuntimeError('Symlink in evidence root')", "root.mkdir(exist_ok=True)",
+           "result=root/'result.json'", "if result.is_symlink():raise RuntimeError('Symlink in result evidence')",
+           "if not result.exists():",
+           " data={'passed':False,'error':'Runner interrupted before final report; available evidence retained','finished_at':time.time()}",
+           " tmp=result.with_suffix('.json.part');tmp.write_text(json.dumps(data,indent=2)+'\\n');tmp.replace(result)",
            "allowed="+repr(set(ALLOWED_EVIDENCE)), "entries={}",
            "for p in sorted(root.rglob('*')):", " rel=p.relative_to(root)",
            " if rel.parts[0] not in allowed:continue", " if p.is_symlink():raise RuntimeError('Symlink in evidence')",
@@ -160,9 +166,9 @@ if any(p.exists() for p in matched):raise RuntimeError('Workload runner did not 
 """
     m.command(x,['shell','guest','--','python3','-c',stop],watch=False,timeout=20)
     probe=root/'playwright-measure.meta-part'
-    m.command(x,evidence_probe_command(),watch=False,output=probe,timeout=60)
-    measured=read(probe);probe.unlink()
     expected=x.get('guest_helper_sha256',LEGACY_GUEST_HELPER_SHA256)
+    m.command(x,evidence_probe_command(expected),watch=False,output=probe,timeout=60)
+    measured=read(probe);probe.unlink()
     if measured['helper_sha256']!=expected:raise ManagerError('Original guest helper identity cannot be verified')
     total=measured['bytes']+measured['manifest_bytes']
     m.reserve_evidence(x,total,measured_bytes=measured['bytes'])

@@ -180,7 +180,7 @@ class Manager:
             old_reserved=reservation['evidence_bytes'];new_reserved=max(old_reserved,3*new_limit+16*1024**2);delta=new_reserved-old_reserved
             if capacity['committed_storage_bytes']+delta>policy['storage_budget_gib']*GIB:
                 raise ManagerError('Evidence export needs more shared storage capacity; guest and evidence retained')
-            if capacity['physical_reservation_headroom_bytes']+delta+policy['staging_mib']*1024**2+policy['free_floor_gib']*GIB>capacity['host']['disk_free_bytes']:
+            if capacity['remaining_reserved_bytes']+delta+policy['staging_mib']*1024**2+policy['free_floor_gib']*GIB>capacity['host']['disk_free_bytes']:
                 raise ManagerError('Evidence export would breach host free-space floor; guest and evidence retained')
             if delta or new_limit>previous_limit:
                 current.setdefault('export_recovery_history',[]).append({'at':time.time(),'previous_limit_bytes':previous_limit,'approved_limit_bytes':new_limit,'previous_reserved_bytes':old_reserved,'reserved_bytes':new_reserved})
