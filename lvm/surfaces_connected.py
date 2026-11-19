@@ -313,6 +313,7 @@ def cleanup(m,x):
   if not pointer.exists():
    checked_state(m,x,empty=True);pre_pointer=True
  if (STATE_ROOT.exists() or STATE_ROOT.is_symlink()) and not pre_pointer:
+  if not x.get('evidence_complete'):raise ManagerError('Required evidence is incomplete; guests retained')
   _,out=lima(m,x,['list','--json'],allow_fail=True)
   entries=[json.loads(line) for line in out.splitlines() if line.strip()]
   names={row.get('name'):row.get('status') for row in entries}

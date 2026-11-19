@@ -508,7 +508,14 @@ chmod 755 /opt/lvm-capture.py
             if x.get('workload',{}).get('runner')=='surfaces-connected-observer':
                 from . import surfaces_connected
                 surfaces_connected.cleanup(self,x)
-            else:self.cleanup(x)
+            else:
+                if not x['evidence_complete']:
+                    # Allocation can fail before there is a guest to preserve.
+                    guest = self.runtime / job / 'l' / 'guest'
+                    pre_guest = x.get('preparation_failed') or x.get('allocation_pending')
+                    if not pre_guest or os.path.lexists(guest):
+                        raise ManagerError('Required evidence is incomplete; guest retained')
+                self.cleanup(x)
             x['state']='failed' if x.get('error') else 'complete'
             x.pop('cleanup_error',None)
         except BaseException as e:x['state']='cleanup_blocked';x['cleanup_error']=str(e)
