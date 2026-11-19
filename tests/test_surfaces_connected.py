@@ -43,7 +43,8 @@ class SurfacesConnectedObserverTests(unittest.TestCase):
         self.assertEqual(list(inspect.signature(connected.start).parameters),['m','label','owner_pid'])
         with self.bound_fixture() as (root,_,config):
             fake=SimpleNamespace(root=root,code_root=pathlib.Path(__file__).resolve().parents[1])
-            payload,spec=connected.snapshot(fake)
+            with patch.object(connected.shutil, 'disk_usage', return_value=SimpleNamespace(free=100 * GIB)):
+                payload,spec=connected.snapshot(fake)
             try:
                 self.assertEqual(spec['runner'],'surfaces-connected-observer')
                 self.assertEqual(spec['fixtures'],['npm-vite-dist','npm-vite-nested-output'])
@@ -160,11 +161,27 @@ class SurfacesConnectedObserverTests(unittest.TestCase):
             connected.cleanup(m,x)
             self.assertTrue(x['vm_deleted']);self.assertTrue(x['runtime_deleted'])
 
+    def test_prepared_guest_is_retained_when_workload_result_is_missing(self):
+        with self.cleanup_fixture() as (m, x, _, _, _):
+            pointer = connected.STATE_ROOT / 'private/runtime-preparation/current.json'
+            pointer.parent.mkdir(parents=True)
+            pointer.write_text('{}')
+            with patch.object(connected, 'lima') as lima:
+                m.supervise(x['job_id'])
+                lima.assert_not_called()
+            receipt = m.status(x['job_id'])
+            self.assertEqual(receipt['state'], 'cleanup_blocked')
+            self.assertFalse(receipt['evidence_complete'])
+            self.assertTrue(receipt['evidence_verified'])
+            self.assertNotIn('reservation_released_at', receipt)
+            self.assertTrue(pointer.is_file())
+
     def test_running_guest_is_stopped_before_rejecting_open_handles(self):
         for lingering in (False,True):
             with self.subTest(lingering=lingering),self.cleanup_fixture() as (m,x,manifest,result,proof):
                 pointer=connected.STATE_ROOT/'private/runtime-preparation/current.json'
                 pointer.parent.mkdir(parents=True);pointer.write_text('{}')
+                x['evidence_complete'] = True
                 live={'execution':'Running'};events=[]
                 def holders(path):
                     if path!=connected.STATE_ROOT:return []

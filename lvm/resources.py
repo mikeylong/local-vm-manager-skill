@@ -169,7 +169,7 @@ def admit(m,settings,reservation):
     if memory+settings['host_memory_floor_gib']*GIB>state['host']['available_memory_bytes']:raise ManagerError('Host memory floor would be breached')
     extra=reservation['runtime_bytes']+reservation['evidence_bytes']+reservation.get('external_evidence_bytes',0)
     if state['committed_storage_bytes']+extra>settings['storage_budget_gib']*GIB:raise ManagerError('Storage reservation budget exhausted')
-    if state['physical_reservation_headroom_bytes']+extra+settings['staging_mib']*MIB+settings['free_floor_gib']*GIB>state['host']['disk_free_bytes']:
+    if state['remaining_reserved_bytes']+extra+settings['staging_mib']*MIB+settings['free_floor_gib']*GIB>state['host']['disk_free_bytes']:
         raise ManagerError('Host free-space floor would be breached')
     return state
 

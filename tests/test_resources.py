@@ -46,6 +46,45 @@ class ResourceTests(unittest.TestCase):
                 # Unit fixtures contain no real guest; remove only these exact fixtures.
                 import shutil
                 shutil.rmtree(self.m.runtime/first['job_id']);self.m.path(first['job_id']).unlink()
+    def test_host_floor_counts_only_unallocated_growth_of_held_jobs(self):
+        held = self.start()
+        claim = held['reservation']
+        full = claim['runtime_bytes'] + claim['evidence_bytes']
+        used_runtime, used_evidence = 4 * GIB, GIB
+        staging = self.m.settings()['staging_mib'] * 1024**2
+        floor = self.m.settings()['free_floor_gib'] * GIB
+        minimum_free = 2 * full - used_runtime - used_evidence + staging + floor
+        with patch('lvm.resources.usage', return_value=(used_runtime, used_evidence)):
+            with patch('lvm.resources.host_capacity', return_value=dict(HOST, disk_free_bytes=minimum_free - 1)):
+                with self.assertRaisesRegex(ManagerError, 'free-space floor'):
+                    self.start()
+            with patch('lvm.resources.host_capacity', return_value=dict(HOST, disk_free_bytes=minimum_free)):
+                self.start()
+
+    def test_verified_partial_capture_keeps_guest_and_reservation_on_recovery(self):
+        job = self.start()
+        guest = self.m.home(job) / 'guest'
+        guest.mkdir()
+        request = 'abcd1234abcd'
+        name = request + '-result.json'
+        result = pathlib.Path(job['evidence_path']) / name
+        result.write_text('{"passed": false}')
+        job.update(state='capturing', captures=[request])
+        job['exports'][name] = {'bytes': result.stat().st_size, 'sha256': sha(result)}
+        atomic(self.m.path(job['job_id']), job)
+        with patch.object(self.m, 'export'), patch.object(self.m, 'cleanup') as cleanup:
+            for _ in range(2):
+                self.m.supervise(job['job_id'])
+                receipt = self.m.status(job['job_id'])
+                self.assertEqual(receipt['state'], 'cleanup_blocked')
+                self.assertFalse(receipt['evidence_complete'])
+                self.assertTrue(receipt['evidence_verified'])
+                self.assertNotIn('reservation_released_at', receipt)
+                self.assertEqual(snapshot(self.m, self.m.settings())['held_job_count'], 1)
+            cleanup.assert_not_called()
+        self.assertTrue(guest.is_dir())
+        self.assertEqual(sha(result), job['exports'][name]['sha256'])
+
     def test_host_floors_fail_closed_without_creating_job(self):
         for value,message in [({**HOST,'disk_free_bytes':1*GIB},'free-space floor'),({**HOST,'available_memory_bytes':17*GIB},'memory floor')]:
             with patch('lvm.resources.host_capacity',return_value=value),self.assertRaisesRegex(ManagerError,message):self.start()
